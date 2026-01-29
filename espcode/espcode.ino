@@ -1,9 +1,8 @@
 /**
  * ============================================================================
- *  Project: ESP32-S3 FastAPI Client (Kawaii Style)
- *  Hardware: ESP32-S3 + ILI9488 (16-bit Parallel) + XPT2046
- *  Library: LovyanGFX + ArduinoJson
- *  Author: Arvin (Modified for Server Connection)
+ *  Project: Smart Plant Monitor (Client)
+ *  Hardware: ESP32-S3 + ILI9488 (Parallel) + XPT2046
+ *  Server: Python FastAPI (Simulated Data)
  * ============================================================================
  */
 
@@ -13,31 +12,28 @@
 #include <ArduinoJson.h>
 
 // ==========================================
-// 1. تنظیمات شبکه و سرور
+// 1. تنظیمات شبکه
 // ==========================================
-
 const char* WIFI_SSID     = "arvinshokouhi";      
 const char* WIFI_PASS     = "Arvin1384"; 
 
-// آدرس IP کامپیوتر خود را جایگزین کنید (از دستور ipconfig در ویندوز استفاده کنید)
+// آدرس‌های سرور طبق درخواست شما
 const char* SERVER_GET_URL  = "http://10.156.45.197:8000/get-data";
 const char* SERVER_POST_URL = "http://10.156.45.197:8000/send-touch";
 
 // ==========================================
-// 2. پالت رنگی (همان استایل Kawaii)
+// 2. پالت رنگ (Modern UI)
 // ==========================================
-namespace Palette {
-  const uint16_t BG_MAIN      = 0xFFDF; // صورتی خیلی ملایم
-  const uint16_t CARD_BG      = 0xFFFF; // سفید
-  const uint16_t TEXT_DARK    = 0x4A69; // خاکستری تیره
-  const uint16_t GREEN_BTN    = 0x4E72; // سبز آبی
-  const uint16_t RED_LED_ON   = 0xF800; // قرمز روشن
-  const uint16_t GREY_LED_OFF = 0xBDF7; // طوسی
-  const uint16_t BLUE_HEADER  = 0x8E7F; // آبی ملایم
-}
+#define C_BG       0xEF7D // خاکستری خیلی روشن مایل به آبی
+#define C_CARD     0xFFFF // سفید
+#define C_TEXT     0x2124 // مشکی ذغالی
+#define C_WATER    0x4416 // آبی تیره
+#define C_SUN      0xFD20 // نارنجی خورشیدی
+#define C_TEMP     0xF800 // قرمز
+#define C_GREEN    0x2589 // سبز گیاهی
 
 // ==========================================
-// 3. درایور نمایشگر (دقیقا طبق کد سخت‌افزاری شما)
+// 3. درایور نمایشگر (هماهنگ با سخت‌افزار شما)
 // ==========================================
 class MyDisplay : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9488 _panel_instance;
@@ -49,7 +45,6 @@ public:
     {
       auto cfg = _bus_instance.config();
       cfg.freq_write = 20000000; 
-      // پین‌های دیتا طبق نمونه کد شما
       cfg.pin_d0 = 4;  cfg.pin_d1 = 5;  cfg.pin_d2 = 6;  cfg.pin_d3 = 7;
       cfg.pin_d4 = 15; cfg.pin_d5 = 16; cfg.pin_d6 = 17; cfg.pin_d7 = 18;
       cfg.pin_d8 = 8;  cfg.pin_d9 = 9;  cfg.pin_d10 = 14; cfg.pin_d11 = 21;
@@ -71,7 +66,6 @@ public:
       cfg.y_min = 200; cfg.y_max = 3700;
       cfg.bus_shared = true;
       cfg.spi_host = SPI2_HOST; cfg.freq = 2500000;
-      // پین‌های تاچ طبق نمونه کد شما
       cfg.pin_sclk = 47; cfg.pin_mosi = 48; cfg.pin_miso = 20; cfg.pin_cs = 2;         
       _touch_instance.config(cfg);
       _panel_instance.setTouch(&_touch_instance);
@@ -81,156 +75,166 @@ public:
 };
 
 MyDisplay tft;
-LGFX_Sprite statusSprite(&tft); // بافر برای جلوگیری از چشمک زدن متن
+LGFX_Sprite spr(&tft); // بافر گرافیکی برای جلوگیری از پرپر زدن
 
 // ==========================================
 // 4. متغیرهای برنامه
 // ==========================================
-struct ServerData {
-  String message = "Waiting...";
-  bool ledOn = false;
-  String lastTouchStatus = "No Touch Yet";
+struct PlantData {
+  int moisture = 0;
+  int sunlight = 0;
+  float temp = 0.0;
+  String message = "Connecting...";
+  String mood = "happy";
 };
-ServerData appData;
+PlantData myPlant;
 
-unsigned long lastNetworkCheck = 0;
+unsigned long lastCheck = 0;
 
 // ==========================================
-// 5. توابع گرافیکی (GUI)
+// 5. توابع گرافیکی (UI)
 // ==========================================
 
-void drawCard(int x, int y, int w, int h) {
-  tft.fillSmoothRoundRect(x+4, y+4, w, h, 15, 0xE73C); // سایه
-  tft.fillSmoothRoundRect(x, y, w, h, 15, Palette::CARD_BG); // بدنه
+// رسم نوار پیشرفت (Progress Bar)
+void drawBar(int x, int y, int w, int h, int val, uint16_t color, String label) {
+  // پس زمینه نوار
+  spr.fillSmoothRoundRect(x, y, w, h, 6, 0xE71C); 
+  
+  // مقدار نوار
+  int fillW = map(val, 0, 100, 0, w);
+  if(fillW > 0) spr.fillSmoothRoundRect(x, y, fillW, h, 6, color);
+  
+  // متن و درصد
+  spr.setTextColor(C_TEXT);
+  spr.setFont(&fonts::FreeSansBold9pt7b);
+  spr.setTextDatum(TL_DATUM);
+  spr.drawString(label, x, y - 20);
+  
+  spr.setTextDatum(TR_DATUM);
+  spr.drawString(String(val) + "%", x + w, y - 20);
 }
 
-void updateUI() {
-  // رسم پس زمینه کارت (فقط یکبار یا اگر نیاز به رفرش کامل بود)
-  // اینجا ما فقط محتوا را آپدیت می‌کنیم روی Sprite
-
-  statusSprite.fillSprite(Palette::CARD_BG);
+// رسم دکمه آب دادن
+void drawWaterButton(bool pressed) {
+  uint16_t color = pressed ? 0x2410 : C_WATER; // تیره‌تر اگر فشار داده شد
+  int y = 380;
   
-  // 1. نمایش پیام سرور
-  statusSprite.setTextColor(Palette::TEXT_DARK);
-  statusSprite.setFont(&fonts::FreeSansBold12pt7b);
-  statusSprite.setTextDatum(TL_DATUM);
-  statusSprite.drawString("Server Says:", 10, 10);
+  spr.fillSmoothRoundRect(40, y, 240, 60, 20, color);
+  spr.setTextColor(C_CARD);
+  spr.setFont(&fonts::FreeSansBold18pt7b);
+  spr.setTextDatum(MC_DATUM);
+  spr.drawString("WATER ME", 160, y + 30);
   
-  statusSprite.setTextColor(Palette::BLUE_HEADER);
-  statusSprite.drawString(appData.message, 10, 40);
+  // آیکون قطره (ساده)
+  spr.fillCircle(80, y + 30, 8, C_CARD);
+  spr.fillTriangle(80-8, y+30, 80+8, y+30, 80, y+15, C_CARD);
+}
 
-  // 2. نمایش وضعیت LED مجازی
-  statusSprite.setTextColor(Palette::TEXT_DARK);
-  statusSprite.drawString("Virtual LED:", 10, 90);
+// تابع اصلی آپدیت صفحه
+void updateScreen(bool btnPressed = false) {
+  spr.fillSprite(C_BG);
+
+  // --- هدر ---
+  spr.fillRect(0, 0, 320, 80, C_CARD);
+  spr.setTextColor(C_TEXT);
+  spr.setFont(&fonts::FreeSansBold12pt7b);
+  spr.setTextDatum(TC_DATUM);
+  spr.drawString("Smart Plant Monitor", 160, 15);
   
-  uint16_t ledColor = appData.ledOn ? Palette::RED_LED_ON : Palette::GREY_LED_OFF;
-  statusSprite.fillSmoothCircle(200, 100, 15, ledColor);
+  // پیام وضعیت
+  spr.setFont(&fonts::FreeSans9pt7b);
+  if(myPlant.mood == "thirsty") spr.setTextColor(C_TEMP);
+  else spr.setTextColor(C_GREEN);
+  spr.drawString(myPlant.message, 160, 50);
   
-  if(appData.ledOn) {
-     statusSprite.setTextColor(Palette::RED_LED_ON);
-     statusSprite.drawString("ON", 230, 90);
-  } else {
-     statusSprite.setTextColor(Palette::GREY_LED_OFF);
-     statusSprite.drawString("OFF", 230, 90);
-  }
+  // --- کارت دما (دایره‌ای) ---
+  int cx = 160; int cy = 160;
+  spr.fillSmoothCircle(cx, cy, 60, C_CARD); // پس زمینه دایره
+  spr.drawArc(cx, cy, 55, 45, 0, 360, 0xE71C); // حلقه خاکستری
+  // حلقه دما
+  int angle = map((int)myPlant.temp, 0, 50, 0, 360);
+  spr.drawArc(cx, cy, 55, 45, 0, angle, C_TEMP);
+  
+  spr.setTextColor(C_TEXT);
+  spr.setFont(&fonts::FreeSansBold18pt7b);
+  spr.setTextDatum(MC_DATUM);
+  spr.drawFloat(myPlant.temp, 1, cx, cy);
+  spr.setFont(&fonts::FreeSans9pt7b);
+  spr.drawString("C", cx + 40, cy - 10);
 
-  // 3. نمایش وضعیت آخرین ارسال
-  statusSprite.setTextColor(Palette::GREEN_BTN);
-  statusSprite.setFont(&fonts::FreeSans9pt7b);
-  statusSprite.drawString(appData.lastTouchStatus, 10, 140);
+  // --- نوارها ---
+  drawBar(30, 260, 260, 15, myPlant.moisture, C_WATER, "Soil Moisture");
+  drawBar(30, 320, 260, 15, myPlant.sunlight, C_SUN, "Sunlight");
 
-  // انتقال اسپرایت به صفحه اصلی
-  statusSprite.pushSprite(20, 80);
+  // --- دکمه ---
+  drawWaterButton(btnPressed);
+
+  spr.pushSprite(0, 0);
 }
 
 // ==========================================
-// 6. توابع شبکه (Network)
+// 6. ارتباط با سرور
 // ==========================================
 
-void sendTouchToServer(int x, int y) {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(SERVER_POST_URL);
-    http.addHeader("Content-Type", "application/json");
-
-    // ساخت JSON: {"x": 100, "y": 200}
-    StaticJsonDocument<200> doc;
-    doc["x"] = x;
-    doc["y"] = y;
-    String requestBody;
-    serializeJson(doc, requestBody);
-
-    appData.lastTouchStatus = "Sending...";
-    updateUI(); // آپدیت فوری رابط کاربری
-
-    int httpResponseCode = http.POST(requestBody);
-
-    if (httpResponseCode > 0) {
-      appData.lastTouchStatus = "Sent: OK (" + String(httpResponseCode) + ")";
-    } else {
-      appData.lastTouchStatus = "Error: " + String(httpResponseCode);
-    }
-    http.end();
-  } else {
-    appData.lastTouchStatus = "WiFi Disconnected!";
-  }
-  updateUI();
-}
-
-void getDataFromServer() {
+void fetchFromServer() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(SERVER_GET_URL);
+    int httpCode = http.GET();
     
-    int httpResponseCode = http.GET();
-    
-    if (httpResponseCode > 0) {
+    if (httpCode > 0) {
       String payload = http.getString();
-      
-      // پارس کردن JSON: {"message": "Hello", "led_on": true}
       StaticJsonDocument<512> doc;
-      DeserializationError error = deserializeJson(doc, payload);
-
-      if (!error) {
-        String msg = doc["message"];
-        appData.message = msg;
-        appData.ledOn = doc["led_on"];
-        updateUI(); // آپدیت گرافیک با دیتای جدید
-      }
+      deserializeJson(doc, payload);
+      
+      myPlant.moisture = doc["moisture"];
+      myPlant.sunlight = doc["sunlight"];
+      myPlant.temp     = doc["temp"];
+      myPlant.message  = doc["message"].as<String>();
+      myPlant.mood     = doc["mood"].as<String>();
+      
+      updateScreen();
     }
     http.end();
   }
 }
 
+void sendWaterCommand() {
+  if (WiFi.status() == WL_CONNECTED) {
+    // افکت گرافیکی دکمه
+    updateScreen(true);
+    
+    HTTPClient http;
+    http.begin(SERVER_POST_URL);
+    http.addHeader("Content-Type", "application/json");
+    
+    // ارسال جیسون {"action": "WATER"}
+    String json = "{\"action\": \"WATER\"}";
+    http.POST(json);
+    http.end();
+    
+    delay(200); // تاخیر کوتاه برای دیدن افکت کلیک
+    
+    // بلافاصله آپدیت کن تا نتیجه (پر شدن آب) دیده شود
+    fetchFromServer(); 
+  }
+}
+
 // ==========================================
-// 7. بدنه اصلی (Setup & Loop)
+// 7. Setup & Loop
 // ==========================================
 
 void setup() {
   Serial.begin(115200);
 
-  // راه اندازی نمایشگر
   tft.init();
-  tft.setRotation(0); // عمودی
-  tft.fillScreen(Palette::BG_MAIN);
+  tft.setRotation(0);
+  spr.createSprite(320, 480);
   
-  // ساخت هدر ثابت
-  tft.fillSmoothRoundRect(10, 10, 300, 50, 10, Palette::BLUE_HEADER);
-  tft.setTextColor(Palette::CARD_BG);
-  tft.setFont(&fonts::FreeSansBold12pt7b);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("FastAPI Client", 160, 35);
-
-  // رسم کادر اصلی دیتا
-  drawCard(20, 80, 280, 180);
-  
-  // راه اندازی بافر گرافیکی (Sprite)
-  statusSprite.createSprite(280, 180);
-  
-  // اتصال به وای فای
-  tft.setFont(&fonts::FreeSans9pt7b);
-  tft.setTextColor(Palette::TEXT_DARK);
-  tft.drawString("Connecting WiFi...", 20, 300);
+  // صفحه اتصال
+  tft.fillScreen(C_BG);
+  tft.setTextColor(C_TEXT);
+  tft.drawString("Connecting to WiFi...", 10, 10);
   
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) {
@@ -238,32 +242,25 @@ void setup() {
     Serial.print(".");
   }
   
-  tft.fillRect(20, 290, 200, 30, Palette::BG_MAIN); // پاک کردن متن وای فای
-  tft.setTextColor(Palette::GREEN_BTN);
-  tft.drawString("WiFi Connected!", 20, 300);
-  tft.drawString(WiFi.localIP().toString(), 20, 320);
+  tft.drawString("Connected!", 10, 30);
+  delay(1000);
   
-  updateUI();
+  fetchFromServer();
 }
 
 void loop() {
   // 1. بررسی تاچ
   int32_t x, y;
   if (tft.getTouch(&x, &y)) {
-    // رسم دایره کوچک زیر انگشت برای فیدبک بصری
-    tft.fillCircle(x, y, 5, Palette::GREEN_BTN);
-    
-    // ارسال به سرور
-    sendTouchToServer(x, y);
-    
-    // پاک کردن دایره بعد از کمی تاخیر (اختیاری)
-    delay(100); 
-    tft.fillCircle(x, y, 5, Palette::BG_MAIN); // یا رفرش کامل صفحه اگر روی کارت نبود
+    // اگر مختصات تاچ روی دکمه پایین بود (تقریبی)
+    if (y > 380 && y < 440 && x > 40 && x < 280) {
+      sendWaterCommand();
+    }
   }
 
-  // 2. دریافت دیتا از سرور (هر 2 ثانیه)
-  if (millis() - lastNetworkCheck > 2000) {
-    getDataFromServer();
-    lastNetworkCheck = millis();
+  // 2. آپدیت خودکار هر 2 ثانیه
+  if (millis() - lastCheck > 2000) {
+    fetchFromServer();
+    lastCheck = millis();
   }
 }

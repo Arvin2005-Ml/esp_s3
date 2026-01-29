@@ -1,69 +1,68 @@
-# نصب کتابخانه‌ها در ترمینال:
-# pip install fastapi uvicorn pydantic
-
+import random
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
-from datetime import datetime
 
 app = FastAPI()
 
-# --- 1. مدل داده برای دریافت تاچ ---
-# این کلاسی است که چک می‌کند دیتای ارسالی از ESP32 درست باشد
-class TouchData(BaseModel):
-    x: int
-    y: int
+# مدل داده برای دریافت دستور لمس
+class ActionData(BaseModel):
+    action: str  # مثلا "WATER" یا "SUN"
 
-# --- 2. حافظه وضعیت (State) ---
-# این دیکشنری وضعیت فعلی سیستم را نگه می‌دارد
-# وقتی سرور را خاموش کنید این اطلاعات پاک می‌شود
-system_state = {
-    "message": "Ready to Start", # پیامی که روی LCD نمایش داده می‌شود
-    "led_on": False,             # وضعیت LED مجازی (قرمز/خاکستری)
-    "touch_count": 0             # تعداد کل تاچ‌ها
+# وضعیت اولیه گلدان
+plant_status = {
+    "moisture": 80,      # رطوبت خاک (0-100)
+    "sunlight": 60,      # نور (0-100)
+    "temp": 24.0,        # دما
+    "message": "I'm Happy!",
+    "mood": "happy"      # happy, thirsty, hot
 }
 
-# --- 3. متد ارسال دیتا به ESP32 (GET) ---
-# آدرس: http://IP:8000/get-data
 @app.get("/get-data")
-async def send_data_to_esp32():
+async def get_plant_stats():
     """
-    این تابع توسط ESP32 هر 2 ثانیه صدا زده می‌شود.
-    آخرین وضعیت سیستم را برمی‌گرداند.
+    این تابع داده‌های سنسورها را شبیه‌سازی می‌کند
     """
-    return system_state
-
-# --- 4. متد دریافت تاچ از ESP32 (POST) ---
-# آدرس: http://IP:8000/send-touch
-@app.post("/send-touch")
-async def receive_touch_from_esp32(data: TouchData):
-    """
-    این تابع وقتی صفحه لمس شد صدا زده می‌شود.
-    مختصات را می‌گیرد و یک کاری انجام می‌دهد (مثلا LED را روشن/خاموش می‌کند).
-    """
-    print(f"--> Touch Received: X={data.x}, Y={data.y}")
+    global plant_status
     
-    # آپدیت کردن منطق برنامه:
-    system_state["touch_count"] += 1
+    # 1. شبیه‌سازی تغییرات رندوم دما (بین 20 تا 30)
+    change = random.uniform(-0.5, 0.5)
+    plant_status["temp"] = round(max(20, min(30, plant_status["temp"] + change)), 1)
     
-    # 1. تغییر وضعیت LED (خاموش/روشن کردن)
-    system_state["led_on"] = not system_state["led_on"]
+    # 2. شبیه‌سازی خشک شدن خاک (هر بار کمی کم می‌شود)
+    plant_status["moisture"] = max(0, plant_status["moisture"] - random.randint(0, 2))
     
-    # 2. تغییر پیام بر اساس وضعیت
-    if system_state["led_on"]:
-        system_state["message"] = f"LED ON (Touch #{system_state['touch_count']})"
+    # 3. شبیه‌سازی نور (رندوم)
+    plant_status["sunlight"] = random.randint(30, 100)
+    
+    # 4. تعیین پیام بر اساس وضعیت
+    if plant_status["moisture"] < 30:
+        plant_status["message"] = "Water Me Please!"
+        plant_status["mood"] = "thirsty"
+    elif plant_status["temp"] > 28:
+        plant_status["message"] = "It's too HOT!"
+        plant_status["mood"] = "hot"
     else:
-        system_state["message"] = f"LED OFF (Touch #{system_state['touch_count']})"
+        plant_status["message"] = "Feeling Good :)"
+        plant_status["mood"] = "happy"
         
-    return {
-        "status": "success", 
-        "server_time": datetime.now().strftime("%H:%M:%S"),
-        "new_led_state": system_state["led_on"]
-    }
+    return plant_status
 
-# --- اجرای برنامه ---
+@app.post("/send-touch")
+async def perform_action(data: ActionData):
+    """
+    وقتی دکمه روی LCD لمس شود این تابع اجرا می‌شود
+    """
+    global plant_status
+    
+    if data.action == "WATER":
+        plant_status["moisture"] = 100
+        plant_status["message"] = "Yummy Water!"
+        plant_status["mood"] = "happy"
+        print("--> Plant was watered!")
+        
+    return {"status": "Updated", "new_level": plant_status["moisture"]}
+
 if __name__ == "__main__":
-    print("Server is running...")
-    print("Make sure your ESP32 connects to your Computer's IP address!")
-    # host="0.0.0.0" یعنی سرور در شبکه لوکال قابل دیدن باشد (خیلی مهم)
+    # اجرای سرور روی تمام کارت‌های شبکه با پورت 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)
