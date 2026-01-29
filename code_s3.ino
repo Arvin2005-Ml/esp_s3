@@ -1,8 +1,11 @@
 /**
  * ============================================================================
- *  Project: Kawaii Plant Monitor (Server Connected)
- *  Style: Milky Pastel & Anime Eyes + FastAPI Backend
- *  Hardware: ESP32-S3 + ILI9488 + XPT2046
+ *  Project: Kawaii Plant Monitor (FINAL COMPLETE VERSION)
+ *  Features: 
+ *    1. Stable WiFi & RAM (Small Sprite)
+ *    2. Working Task Manager (Swipe Up)
+ *    3. Direct Drawing for UI (No Flicker)
+ *    4. Smooth Face Animation
  * ============================================================================
  */
 
@@ -11,33 +14,22 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-// ==========================================
-// 1. تنظیمات شبکه
-// ==========================================
+// --- تنظیمات ---
 const char* WIFI_SSID     = "arvinshokouhi";      
 const char* WIFI_PASS     = "Arvin1384"; 
+// **مهم**: IP سیستم خود را جایگزین کنید
+const char* SERVER_BASE   = "http://10.156.45.197:8000"; 
 
-// آدرس سرور پایتون
-const char* SERVER_GET  = "http://10.156.45.197:8000/get-data";
-const char* SERVER_POST = "http://10.156.45.197:8000/send-touch";
+// --- رنگ‌ها ---
+#define C_BG_PLANT  0xF7F9 
+#define C_BG_TASK   0xE0F7 
+#define C_FACE_BG   0xF7F9 
+#define C_CARD      0xFFFF 
+#define C_TEXT      0x39E7 
+#define C_ACCENT    0xFB56 
+#define C_CHECK     0x2E8B 
 
-// ==========================================
-// 2. پالت رنگی (همان استایل زیبا)
-// ==========================================
-namespace Palette {
-  const uint16_t BG_DAY       = 0xFFDF; // صورتی خیلی ملایم
-  const uint16_t BG_NIGHT     = 0x2965; // سرمه‌ای ملایم
-  const uint16_t WHITE        = 0xFFFF; 
-  const uint16_t PINK_HOT     = 0xFB56; 
-  const uint16_t PINK_SOFT    = 0xFDB8; 
-  const uint16_t BLUE_SKY     = 0x8E7F; 
-  const uint16_t TEAL_WATER   = 0x4E72; 
-  const uint16_t TEXT_MAIN    = 0x4A69; 
-}
-
-// ==========================================
-// 3. درایور نمایشگر (کانفیگ سخت‌افزاری شما)
-// ==========================================
+// --- درایور نمایشگر (ILI9488 Parallel) ---
 class KawaiiDisplay : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9488 _panel_instance;
   lgfx::Bus_Parallel16 _bus_instance;
@@ -78,234 +70,322 @@ public:
 };
 
 KawaiiDisplay tft;
-LGFX_Sprite faceSprite(&tft);
+LGFX_Sprite sprFace(&tft); // اسپیرایت کوچک برای صورت (RAM Safe)
 
-// ==========================================
-// 4. دیتای دریافت شده از سرور
-// ==========================================
-struct ServerState {
-  int moisture = 50;
-  int sunlight = 50;
-  float temp = 25.0;
-  String mood = "HAPPY"; // HAPPY, SAD, EXCITED, SLEEPY, LOVE, HOT
+// --- متغیرها ---
+struct TaskItem { String name; bool done; };
+struct AppData {
+  float moisture; float temp; int humidity; int light;
+  String mood = "HAPPY";
+  std::vector<TaskItem> tasks;
 };
-ServerState currentData;
-unsigned long lastFetch = 0;
+AppData appData;
+
+enum ScreenMode { SCREEN_PLANT, SCREEN_TASKS };
+ScreenMode currentScreen = SCREEN_PLANT;
+
+float breathVal = 0;
+bool isBlinking = false;
+unsigned long lastBlink = 0;
 
 // ==========================================
-// 5. توابع گرافیکی (رسم صورت و کارت‌ها)
+// 1. توابع شبکه (Network)
 // ==========================================
-
-void drawKawaiiCard(int x, int y, int w, int h, String title, float val, uint16_t color) {
-  tft.fillSmoothRoundRect(x+3, y+3, w, h, 20, 0xE73C); // Shadow
-  tft.fillSmoothRoundRect(x, y, w, h, 20, Palette::WHITE); // Body
-  
-  // Icon Circle
-  tft.fillSmoothCircle(x + 25, y + 25, 12, color);
-  
-  // Title
-  tft.setTextColor(Palette::TEXT_MAIN, Palette::WHITE);
-  tft.setTextDatum(TL_DATUM);
-  tft.setFont(&fonts::FreeSansBold9pt7b);
-  tft.drawString(title, x + 50, y + 15);
-  
-  // Progress Bar
-  int barW = w - 30;
-  int barY = y + h - 25;
-  tft.fillSmoothRoundRect(x+15, barY, barW, 10, 5, 0xF7BE); // Back
-  int fillW = map((int)val, 0, 100, 0, barW);
-  if (fillW > 4) tft.fillSmoothRoundRect(x+15, barY, fillW, 10, 5, color);
-  
-  // Text Value
-  tft.setTextDatum(TR_DATUM);
-  tft.drawString(String((int)val) + "%", x + w - 15, y + 15);
-}
-
-void drawStar(int x, int y, uint16_t c) {
-  faceSprite.drawLine(x-4, y, x+4, y, c);
-  faceSprite.drawLine(x, y-4, x, y+4, c);
-}
-
-void drawFace() {
-  // رنگ پس زمینه بر اساس مود (شب/روز یا مود خاص)
-  uint16_t bg = (currentData.mood == "SLEEPY") ? Palette::BG_NIGHT : Palette::BG_DAY;
-  faceSprite.fillSprite(bg);
-  
-  // انیمیشن تنفس
-  static float t = 0; t += 0.1;
-  float yOff = sin(t) * 2.0;
-  int cx = 110; int cy = 110 + (int)yOff;
-  
-  // بدنه صورت
-  faceSprite.fillEllipse(cx, cy + 85, 60, 10, 0xE699); // سایه زیر
-  faceSprite.fillEllipse(cx, cy, 95, 85, Palette::WHITE); // صورت
-  faceSprite.drawEllipse(cx, cy, 95, 85, Palette::TEXT_MAIN); // خط دور
-
-  // گونه‌ها
-  faceSprite.fillEllipse(cx - 55, cy + 15, 14, 8, Palette::PINK_SOFT);
-  faceSprite.fillEllipse(cx + 55, cy + 15, 14, 8, Palette::PINK_SOFT);
-
-  uint16_t eyeC = Palette::TEXT_MAIN;
-  String m = currentData.mood;
-
-  // --- رسم چشم‌ها بر اساس مود ---
-  if (m == "SLEEPY") {
-    faceSprite.drawArc(cx-40, cy, 15, 12, 190, 350, eyeC);
-    faceSprite.drawArc(cx+40, cy, 15, 12, 190, 350, eyeC);
-    faceSprite.setTextColor(Palette::BLUE_SKY);
-    faceSprite.drawString("Zzz...", cx+60, cy-40);
-  } 
-  else if (m == "LOVE") {
-     faceSprite.fillSmoothCircle(cx - 40, cy, 10, Palette::PINK_HOT);
-     faceSprite.fillSmoothCircle(cx + 40, cy, 10, Palette::PINK_HOT);
-  }
-  else if (m == "EXCITED") {
-     drawStar(cx-40, cy, eyeC);
-     drawStar(cx+40, cy, eyeC);
-  }
-  else if (m == "SAD") {
-     // چشم گریان
-     faceSprite.fillEllipse(cx - 40, cy, 12, 10, eyeC);
-     faceSprite.fillEllipse(cx + 40, cy, 12, 10, eyeC);
-     // قطره اشک
-     faceSprite.fillCircle(cx - 40, cy + 15, 4, Palette::BLUE_SKY);
-  }
-  else if (m == "HOT") {
-     // چشم گیج
-     faceSprite.drawLine(cx-45, cy-5, cx-35, cy+5, eyeC);
-     faceSprite.drawLine(cx-35, cy-5, cx-45, cy+5, eyeC);
-     faceSprite.drawLine(cx+45, cy-5, cx+35, cy+5, eyeC);
-     faceSprite.drawLine(cx+35, cy-5, cx+45, cy+5, eyeC);
-     // قطره عرق
-     faceSprite.fillCircle(cx + 70, cy - 20, 6, Palette::BLUE_SKY);
-  }
-  else { // HAPPY
-    faceSprite.fillEllipse(cx - 40, cy, 12, 16, eyeC);
-    faceSprite.fillEllipse(cx + 40, cy, 12, 16, eyeC);
-    faceSprite.fillCircle(cx - 44, cy - 6, 4, Palette::WHITE); 
-    faceSprite.fillCircle(cx + 36, cy - 6, 4, Palette::WHITE); 
-  }
-
-  // --- رسم دهان ---
-  if (m == "SAD") {
-    faceSprite.drawArc(cx, cy + 40, 10, 8, 200, 340, eyeC); // ناراحت
-  } else if (m == "EXCITED" || m == "LOVE") {
-    faceSprite.fillEllipse(cx, cy + 30, 8, 12, Palette::PINK_HOT); // دهان باز
-  } else {
-    faceSprite.drawArc(cx - 5, cy + 30, 6, 5, 20, 160, eyeC); // لبخند
-    faceSprite.drawArc(cx + 5, cy + 30, 6, 5, 20, 160, eyeC);
-  }
-  
-  // برگ روی سر
-  faceSprite.fillEllipse(cx, cy - 90, 5, 10, Palette::TEAL_WATER);
-  faceSprite.fillEllipse(cx + 10, cy - 95, 15, 8, 0x5F68);
-
-  faceSprite.pushSprite(50, 40);
-}
-
-// ==========================================
-// 6. ارتباط با سرور
-// ==========================================
-
-void syncWithServer() {
+void fetchData() {
   if (WiFi.status() != WL_CONNECTED) return;
-  
   HTTPClient http;
-  http.begin(SERVER_GET);
+  http.begin(String(SERVER_BASE) + "/get-data");
   int code = http.GET();
-  
   if (code > 0) {
     String payload = http.getString();
-    StaticJsonDocument<512> doc;
-    DeserializationError err = deserializeJson(doc, payload);
+    // بافر کوچک برای جلوگیری از کرش
+    StaticJsonDocument<1500> doc;
+    deserializeJson(doc, payload);
     
-    if (!err) {
-      currentData.moisture = doc["moisture"];
-      currentData.sunlight = doc["sunlight"];
-      currentData.temp = doc["temp"];
-      const char* m = doc["mood"];
-      currentData.mood = String(m);
-      
-      // تغییر رنگ پس زمینه کل صفحه اگر مود خواب بود
-      static String lastMood = "";
-      if (currentData.mood != lastMood) {
-        if (currentData.mood == "SLEEPY") tft.fillScreen(Palette::BG_NIGHT);
-        else if (lastMood == "SLEEPY") tft.fillScreen(Palette::BG_DAY);
-        
-        // آپدیت کارت‌های پایین (چون بک گراند ممکن است پاکشان کرده باشد)
-        drawKawaiiCard(15, 290, 140, 90, "Water", currentData.moisture, Palette::TEAL_WATER);
-        drawKawaiiCard(165, 290, 140, 90, "Light", currentData.sunlight, 0xFED0);
-        drawKawaiiCard(15, 395, 290, 70, "Temp", currentData.temp * 3, Palette::PINK_HOT); // *3 just for scaling on bar
-        
-        lastMood = currentData.mood;
-      } else {
-        // فقط آپدیت مقادیر بدون پاک کردن کل صفحه
-        drawKawaiiCard(15, 290, 140, 90, "Water", currentData.moisture, Palette::TEAL_WATER);
-        drawKawaiiCard(165, 290, 140, 90, "Light", currentData.sunlight, 0xFED0);
-        drawKawaiiCard(15, 395, 290, 70, "Temp", currentData.temp * 3, Palette::PINK_HOT);
-      }
+    appData.moisture = doc["moisture"];
+    appData.temp = doc["temp"];
+    appData.humidity = doc["humidity"];
+    appData.light = doc["light"];
+    appData.mood = doc["mood"].as<String>();
+    
+    appData.tasks.clear();
+    JsonArray tArr = doc["tasks"];
+    for(JsonObject v : tArr) {
+      appData.tasks.push_back({v["name"].as<String>(), v["done"]});
     }
   }
   http.end();
 }
 
-void sendAction(String actionType) {
+void toggleTaskServer(int index) {
   if (WiFi.status() != WL_CONNECTED) return;
-  
   HTTPClient http;
-  http.begin(SERVER_POST);
+  http.begin(String(SERVER_BASE) + "/toggle-task");
   http.addHeader("Content-Type", "application/json");
-  String json = "{\"action\": \"" + actionType + "\"}";
-  http.POST(json);
+  http.POST("{\"index\": " + String(index) + "}");
   http.end();
-  
-  // بلافاصله سینک کن تا تغییر حس رو ببینیم
-  syncWithServer();
+  fetchData(); 
+}
+
+void sendWater() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  http.begin(String(SERVER_BASE) + "/send-touch");
+  http.addHeader("Content-Type", "application/json");
+  http.POST("{\"action\": \"WATER\"}");
+  http.end();
+  appData.moisture = 100;
+  appData.mood = "EXCITED";
 }
 
 // ==========================================
-// 7. Setup & Loop
+// 2. توابع گرافیکی (UI Drawing)
 // ==========================================
 
+void drawFace() {
+  sprFace.fillSprite(C_FACE_BG);
+  int cx = 70; // مرکز اسپیرایت 140 پیکسلی
+  int cy = 70 + (int)breathVal;
+  
+  // بدنه صورت
+  sprFace.fillEllipse(cx, cy + 50, 40, 6, 0xE71C); // سایه
+  sprFace.fillEllipse(cx, cy, 60, 55, 0xFFFF);
+  sprFace.drawEllipse(cx, cy, 60, 55, C_TEXT);
+
+  // چشم‌ها
+  uint16_t ec = C_TEXT;
+  if(appData.mood == "SAD") {
+     sprFace.fillEllipse(cx-20, cy, 8, 12, ec); sprFace.fillEllipse(cx+20, cy, 8, 12, ec);
+     sprFace.drawArc(cx, cy+30, 8, 6, 180, 360, ec);
+     sprFace.fillCircle(cx-25, cy+10, 3, 0x001F);
+  } else if (appData.mood == "EXCITED") {
+     sprFace.drawString(">", cx-30, cy-5, 2); sprFace.drawString("<", cx+15, cy-5, 2);
+     sprFace.fillEllipse(cx, cy+25, 6, 8, C_ACCENT);
+  } else if (isBlinking || appData.mood == "SLEEPY") {
+     sprFace.drawArc(cx-20, cy, 12, 10, 180, 360, ec); sprFace.drawArc(cx+20, cy, 12, 10, 180, 360, ec);
+  } else {
+     sprFace.fillEllipse(cx-20, cy, 8, 12, ec); sprFace.fillEllipse(cx+20, cy, 8, 12, ec);
+     sprFace.fillCircle(cx-22, cy-3, 2, 0xFFFF); sprFace.fillCircle(cx+18, cy-3, 2, 0xFFFF);
+     sprFace.drawArc(cx, cy+20, 8, 6, 0, 180, ec);
+  }
+  
+  // انیمیشن تنفس
+  breathVal = sin(millis()/500.0)*2.0;
+  if (!isBlinking && millis()-lastBlink > 3000) { isBlinking=true; lastBlink=millis(); }
+  if (isBlinking && millis()-lastBlink > 150) { isBlinking=false; lastBlink=millis(); }
+
+  // رسم در سمت چپ صفحه
+  sprFace.pushSprite(20, 100);
+}
+
+void drawPlantData() {
+  int bx = 180; // شروع پنل دیتا
+  
+  // رسم 4 کارت (مستقیم روی صفحه)
+  struct CardInfo { int x; int y; String t; String v; uint16_t c; };
+  CardInfo cards[] = {
+    {bx+10, 50, "Soil", String((int)appData.moisture)+"%", 0x4D19},
+    {bx+150, 50, "Temp", String(appData.temp,1), 0xFC00},
+    {bx+10, 125, "Light", String(appData.light)+"%", 0xFE60},
+    {bx+150, 125, "Air", String(appData.humidity)+"%", 0x867F}
+  };
+  
+  for(auto& c : cards) {
+    tft.fillSmoothRoundRect(c.x, c.y, 130, 65, 10, C_CARD);
+    tft.fillSmoothCircle(c.x+20, c.y+32, 14, c.c);
+    tft.setTextColor(0x9CD3); tft.setFont(&fonts::FreeSans9pt7b);
+    tft.drawString(c.t, c.x+45, c.y+10);
+    tft.setTextColor(C_TEXT); tft.setFont(&fonts::FreeSansBold12pt7b);
+    tft.drawString(c.v, c.x+45, c.y+30);
+  }
+  
+  // دکمه آب
+  tft.fillSmoothRoundRect(bx+10, 250, 270, 50, 15, C_TEXT);
+  tft.setTextColor(0xFFFF); tft.setTextDatum(MC_DATUM);
+  tft.drawString("WATER ME!", bx+145, 275);
+  
+  // متن راهنما برای Swipe
+  tft.setTextColor(0x9CD3); tft.setFont(&fonts::FreeSans9pt7b);
+  tft.setTextDatum(BC_DATUM);
+  tft.drawString("^ Swipe UP for Tasks ^", 240, 315);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void drawTaskScreen() {
+  tft.setTextColor(C_TEXT);
+  tft.setFont(&fonts::FreeSansBold12pt7b);
+  tft.drawString("My Tasks", 20, 20);
+  
+  tft.setFont(&fonts::FreeSans9pt7b);
+  tft.drawString("v Swipe DOWN to Back v", 20, 50);
+  
+  int y = 80;
+  for (int i = 0; i < appData.tasks.size(); i++) {
+    tft.fillSmoothRoundRect(20, y, 440, 50, 10, C_CARD);
+    if (appData.tasks[i].done) {
+      tft.fillSmoothRoundRect(30, y+10, 30, 30, 5, C_CHECK);
+      tft.setTextColor(C_CARD); tft.drawString("v", 38, y+15);
+    } else {
+      tft.drawRoundRect(30, y+10, 30, 30, 5, C_TEXT);
+    }
+    tft.setTextColor(C_TEXT); tft.setFont(&fonts::FreeSans12pt7b);
+    tft.drawString(appData.tasks[i].name, 75, y+15);
+    y += 60;
+  }
+}
+
+// انیمیشن پرده‌ای برای تغییر صفحه
+void animateSwitch(ScreenMode target) {
+  uint16_t targetColor = (target == SCREEN_TASKS) ? C_BG_TASK : C_BG_PLANT;
+  int step = 60; 
+  
+  // افکت Wipe
+  if (target == SCREEN_TASKS) {
+    for (int y = 320; y >= 0; y -= step) {
+      tft.fillRect(0, y, 480, step, targetColor);
+      delay(10);
+    }
+  } else {
+    for (int y = 0; y < 320; y += step) {
+      tft.fillRect(0, y, 480, step, targetColor);
+      delay(10);
+    }
+  }
+  
+  tft.fillScreen(targetColor);
+  
+  // رسم محتوای صفحه جدید
+  if (target == SCREEN_TASKS) {
+    drawTaskScreen();
+  } else {
+    tft.setTextColor(C_TEXT); tft.setFont(&fonts::FreeSansBold12pt7b);
+    tft.drawString("Plant Status", 190, 10);
+    drawPlantData(); 
+  }
+  currentScreen = target;
+}
+
+// ==========================================
+// 3. ورودی و کنترل (Input Logic)
+// ==========================================
+int16_t startY = -1;
+
+void checkSwipeAndTouch() {
+  int32_t x, y;
+  bool touched = tft.getTouch(&x, &y);
+  
+  if (touched) {
+    if (startY == -1) startY = y; // شروع لمس
+  } else {
+    // انگشت برداشته شد
+    if (startY != -1) {
+       // اینجا میتونیم کلیک رو تشخیص بدیم ولی بهتره در لحظه تاچ تشخیص بدیم
+    }
+    startY = -1; // ریست
+  }
+  
+  // اگر انگشت روی صفحه است
+  if (touched && startY != -1) {
+    int dist = startY - y; // مثبت = حرکت به بالا
+    
+    // تشخیص Swipe
+    if (dist > 50 && currentScreen == SCREEN_PLANT) {
+      animateSwitch(SCREEN_TASKS);
+      startY = -1; // ریست تا وقتی دست برداشته شه
+      return;
+    }
+    if (dist < -50 && currentScreen == SCREEN_TASKS) {
+      animateSwitch(SCREEN_PLANT);
+      startY = -1;
+      return;
+    }
+    
+    // تشخیص کلیک (اگر حرکت کم بود)
+    if (abs(dist) < 10) {
+       // برای جلوگیری از کلیک رگباری، یک فلگ ساده
+       static unsigned long lastClick = 0;
+       if (millis() - lastClick > 300) {
+          // کلیک در صفحه گیاه
+          if (currentScreen == SCREEN_PLANT) {
+              if (x > 190 && y > 250 && y < 310) {
+                  sendWater();
+                  tft.fillSmoothRoundRect(190, 250, 270, 50, 15, C_ACCENT);
+                  delay(150);
+                  drawPlantData();
+                  lastClick = millis();
+              }
+          }
+          // کلیک در صفحه تسک‌ها
+          else if (currentScreen == SCREEN_TASKS) {
+              int idx = (y - 80) / 60;
+              if (idx >= 0 && idx < appData.tasks.size()) {
+                  // تیک زدن گرافیکی فوری
+                  appData.tasks[idx].done = !appData.tasks[idx].done;
+                  drawTaskScreen();
+                  // ارسال به سرور
+                  toggleTaskServer(idx);
+                  lastClick = millis();
+              }
+          }
+       }
+    }
+  }
+}
+
+// ==========================================
+// Setup & Loop
+// ==========================================
 void setup() {
   Serial.begin(115200);
-  
   tft.init();
-  tft.setRotation(0);
-  tft.fillScreen(Palette::BG_DAY);
+  tft.setRotation(1);
+  tft.fillScreen(C_BG_PLANT);
   
-  faceSprite.createSprite(220, 220); // بافر برای انیمیشن روان
+  // اسپیرایت 140x140 برای صورت (رم امن)
+  sprFace.createSprite(140, 140);
   
-  tft.drawString("Connecting...", 10, 10);
+  tft.setTextColor(C_TEXT);
+  tft.drawString("Connecting...", 220, 160);
+  
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  while(WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nConnected!");
   
-  tft.fillScreen(Palette::BG_DAY);
-  syncWithServer();
+  fetchData();
+  
+  // رسم اولیه
+  tft.fillScreen(C_BG_PLANT);
+  tft.setTextColor(C_TEXT);
+  tft.setFont(&fonts::FreeSansBold12pt7b);
+  tft.drawString("Plant Status", 190, 10);
+  drawPlantData();
 }
 
+unsigned long lastNetCheck = 0;
+unsigned long lastDrawCheck = 0;
+
 void loop() {
-  // 1. بررسی تاچ
-  int32_t x, y;
-  if (tft.getTouch(&x, &y)) {
-    // کارت سمت چپ (آب)
-    if (y > 290 && y < 380 && x < 160) {
-       sendAction("WATER");
-       faceSprite.fillSprite(Palette::WHITE); // فلش سفید برای بازخورد
-       faceSprite.pushSprite(50, 40);
-    }
-    // کارت پایین (Love/Temp)
-    else if (y > 390) {
-       sendAction("LOVE");
+  checkSwipeAndTouch(); // همیشه ورودی را چک کن
+  
+  // فقط اگر در صفحه اصلی هستیم صورت را انیمیت کن
+  if (currentScreen == SCREEN_PLANT) {
+    drawFace(); 
+    
+    // آپدیت دیتا هر 2 ثانیه (فقط گرافیک)
+    if (millis() - lastDrawCheck > 2000) {
+      drawPlantData();
+      lastDrawCheck = millis();
     }
   }
-
-  // 2. انیمیشن صورت (سریع)
-  drawFace();
-
-  // 3. دریافت دیتا از سرور (کندتر - هر 1 ثانیه)
-  if (millis() - lastFetch > 1000) {
-    syncWithServer();
-    lastFetch = millis();
+  
+  // سینک با سرور هر 2 ثانیه
+  if (millis() - lastNetCheck > 2000) {
+    fetchData();
+    // اگر در صفحه تسک هستیم و دیتا عوض شد، رفرش کن
+    if (currentScreen == SCREEN_TASKS) {
+       // اینجا میتونیم رفرش کنیم اگر لازم بود
+       // drawTaskScreen(); 
+    }
+    lastNetCheck = millis();
   }
 }

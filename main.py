@@ -5,64 +5,46 @@ import uvicorn
 
 app = FastAPI()
 
-# مدل داده برای دریافت دستور لمس
-class ActionData(BaseModel):
-    action: str  # مثلا "WATER" یا "SUN"
+class TaskIdx(BaseModel):
+    index: int
+class Action(BaseModel):
+    action: str
 
-# وضعیت اولیه گلدان
-plant_status = {
-    "moisture": 80,      # رطوبت خاک (0-100)
-    "sunlight": 60,      # نور (0-100)
-    "temp": 24.0,        # دما
-    "message": "I'm Happy!",
-    "mood": "happy"      # happy, thirsty, hot
+# دیتابیس
+data_store = {
+    "moisture": 80, "temp": 24.5, "humidity": 45, "light": 70,
+    "mood": "HAPPY",
+    "tasks": [
+        {"name": "Water Plants", "done": False},
+        {"name": "Check Bugs", "done": True},
+        {"name": "Mist Leaves", "done": False},
+        {"name": "Talk to Plant", "done": False}
+    ]
 }
 
 @app.get("/get-data")
-async def get_plant_stats():
-    """
-    این تابع داده‌های سنسورها را شبیه‌سازی می‌کند
-    """
-    global plant_status
-    
-    # 1. شبیه‌سازی تغییرات رندوم دما (بین 20 تا 30)
-    change = random.uniform(-0.5, 0.5)
-    plant_status["temp"] = round(max(20, min(30, plant_status["temp"] + change)), 1)
-    
-    # 2. شبیه‌سازی خشک شدن خاک (هر بار کمی کم می‌شود)
-    plant_status["moisture"] = max(0, plant_status["moisture"] - random.randint(0, 2))
-    
-    # 3. شبیه‌سازی نور (رندوم)
-    plant_status["sunlight"] = random.randint(30, 100)
-    
-    # 4. تعیین پیام بر اساس وضعیت
-    if plant_status["moisture"] < 30:
-        plant_status["message"] = "Water Me Please!"
-        plant_status["mood"] = "thirsty"
-    elif plant_status["temp"] > 28:
-        plant_status["message"] = "It's too HOT!"
-        plant_status["mood"] = "hot"
-    else:
-        plant_status["message"] = "Feeling Good :)"
-        plant_status["mood"] = "happy"
-        
-    return plant_status
+async def get_data():
+    global data_store
+    data_store["moisture"] = max(0, data_store["moisture"] - 0.1)
+    data_store["temp"] = round(random.uniform(22.0, 28.0), 1)
+    if data_store["moisture"] < 30: data_store["mood"] = "SAD"
+    elif data_store["temp"] > 30: data_store["mood"] = "HOT"
+    else: data_store["mood"] = "HAPPY"
+    return data_store
+
+@app.post("/toggle-task")
+async def toggle_task(item: TaskIdx):
+    idx = item.index
+    if 0 <= idx < len(data_store["tasks"]):
+        data_store["tasks"][idx]["done"] = not data_store["tasks"][idx]["done"]
+    return {"tasks": data_store["tasks"]}
 
 @app.post("/send-touch")
-async def perform_action(data: ActionData):
-    """
-    وقتی دکمه روی LCD لمس شود این تابع اجرا می‌شود
-    """
-    global plant_status
-    
-    if data.action == "WATER":
-        plant_status["moisture"] = 100
-        plant_status["message"] = "Yummy Water!"
-        plant_status["mood"] = "happy"
-        print("--> Plant was watered!")
-        
-    return {"status": "Updated", "new_level": plant_status["moisture"]}
+async def send_action(act: Action):
+    if act.action == "WATER":
+        data_store["moisture"] = 100
+        data_store["mood"] = "EXCITED"
+    return {"status": "ok"}
 
 if __name__ == "__main__":
-    # اجرای سرور روی تمام کارت‌های شبکه با پورت 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,8 +1,8 @@
 /**
  * ============================================================================
- *  Project: Smart Plant Monitor (Client)
- *  Hardware: ESP32-S3 + ILI9488 (Parallel) + XPT2046
- *  Server: Python FastAPI (Simulated Data)
+ *  Project: Ultimate Kawaii Plant Monitor (Smooth & Info Rich)
+ *  Hardware: ESP32-S3 + ILI9488 + XPT2046
+ *  Features: Smooth Animations, 4-Data Grid, Modern UI
  * ============================================================================
  */
 
@@ -11,37 +11,30 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-// ==========================================
-// 1. تنظیمات شبکه
-// ==========================================
+// --- تنظیمات ---
 const char* WIFI_SSID     = "arvinshokouhi";      
 const char* WIFI_PASS     = "Arvin1384"; 
+const char* SERVER_BASE   = "http://10.156.45.197:8000"; // IP سرور خود را چک کنید
 
-// آدرس‌های سرور طبق درخواست شما
-const char* SERVER_GET_URL  = "http://10.156.45.197:8000/get-data";
-const char* SERVER_POST_URL = "http://10.156.45.197:8000/send-touch";
+// --- رنگ‌های پاستلی مدرن ---
+#define C_BG        0xF7F9 // سفید مایل به آبی
+#define C_FACE_BG   0xFFFA // صورتی خیلی محو
+#define C_CARD      0xFFFF // سفید مطلق
+#define C_TEXT      0x39E7 // خاکستری تیره
+#define C_ACCENT    0xFB56 // صورتی جیغ (برای هایلایت)
+#define C_WATER     0x4D19 // آبی اقیانوسی
+#define C_TEMP      0xFC00 // نارنجی
+#define C_HUMID     0x867F // بنفش ملایم
+#define C_LIGHT     0xFE60 // زرد
 
-// ==========================================
-// 2. پالت رنگ (Modern UI)
-// ==========================================
-#define C_BG       0xEF7D // خاکستری خیلی روشن مایل به آبی
-#define C_CARD     0xFFFF // سفید
-#define C_TEXT     0x2124 // مشکی ذغالی
-#define C_WATER    0x4416 // آبی تیره
-#define C_SUN      0xFD20 // نارنجی خورشیدی
-#define C_TEMP     0xF800 // قرمز
-#define C_GREEN    0x2589 // سبز گیاهی
-
-// ==========================================
-// 3. درایور نمایشگر (هماهنگ با سخت‌افزار شما)
-// ==========================================
-class MyDisplay : public lgfx::LGFX_Device {
+// --- درایور نمایشگر ---
+class KawaiiDisplay : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9488 _panel_instance;
   lgfx::Bus_Parallel16 _bus_instance;
   lgfx::Touch_XPT2046 _touch_instance;
 
 public:
-  MyDisplay(void) {
+  KawaiiDisplay(void) {
     {
       auto cfg = _bus_instance.config();
       cfg.freq_write = 20000000; 
@@ -74,193 +67,286 @@ public:
   }
 };
 
-MyDisplay tft;
-LGFX_Sprite spr(&tft); // بافر گرافیکی برای جلوگیری از پرپر زدن
+KawaiiDisplay tft;
+// دو اسپیرایت جداگانه برای مدیریت بهتر رم
+LGFX_Sprite sprFace(&tft); // اسپیرایت صورت (چپ)
+LGFX_Sprite sprData(&tft); // اسپیرایت دیتا (راست)
 
-// ==========================================
-// 4. متغیرهای برنامه
-// ==========================================
+// --- متغیرهای دیتا ---
 struct PlantData {
-  int moisture = 0;
-  int sunlight = 0;
-  float temp = 0.0;
-  String message = "Connecting...";
-  String mood = "happy";
+  float moisture = 0; float targetMoisture = 0;
+  float temp = 0;
+  int humidity = 0;
+  int light = 0;
+  String mood = "HAPPY";
 };
-PlantData myPlant;
+PlantData pData;
 
-unsigned long lastCheck = 0;
+// --- متغیرهای انیمیشن ---
+unsigned long lastBlink = 0;
+bool isBlinking = false;
+float breathVal = 0; // برای بالا پایین رفتن صورت
 
 // ==========================================
-// 5. توابع گرافیکی (UI)
+// توابع کمکی گرافیک
 // ==========================================
 
-// رسم نوار پیشرفت (Progress Bar)
-void drawBar(int x, int y, int w, int h, int val, uint16_t color, String label) {
-  // پس زمینه نوار
-  spr.fillSmoothRoundRect(x, y, w, h, 6, 0xE71C); 
-  
-  // مقدار نوار
-  int fillW = map(val, 0, 100, 0, w);
-  if(fillW > 0) spr.fillSmoothRoundRect(x, y, fillW, h, 6, color);
-  
-  // متن و درصد
-  spr.setTextColor(C_TEXT);
-  spr.setFont(&fonts::FreeSansBold9pt7b);
-  spr.setTextDatum(TL_DATUM);
-  spr.drawString(label, x, y - 20);
-  
-  spr.setTextDatum(TR_DATUM);
-  spr.drawString(String(val) + "%", x + w, y - 20);
+// تابع Lerp برای حرکت نرم اعداد (Linear Interpolation)
+float lerp(float start, float end, float t) {
+  return start + (end - start) * t;
 }
 
-// رسم دکمه آب دادن
-void drawWaterButton(bool pressed) {
-  uint16_t color = pressed ? 0x2410 : C_WATER; // تیره‌تر اگر فشار داده شد
-  int y = 380;
-  
-  spr.fillSmoothRoundRect(40, y, 240, 60, 20, color);
-  spr.setTextColor(C_CARD);
-  spr.setFont(&fonts::FreeSansBold18pt7b);
-  spr.setTextDatum(MC_DATUM);
-  spr.drawString("WATER ME", 160, y + 30);
-  
-  // آیکون قطره (ساده)
-  spr.fillCircle(80, y + 30, 8, C_CARD);
-  spr.fillTriangle(80-8, y+30, 80+8, y+30, 80, y+15, C_CARD);
-}
-
-// تابع اصلی آپدیت صفحه
-void updateScreen(bool btnPressed = false) {
-  spr.fillSprite(C_BG);
-
-  // --- هدر ---
-  spr.fillRect(0, 0, 320, 80, C_CARD);
-  spr.setTextColor(C_TEXT);
-  spr.setFont(&fonts::FreeSansBold12pt7b);
-  spr.setTextDatum(TC_DATUM);
-  spr.drawString("Smart Plant Monitor", 160, 15);
-  
-  // پیام وضعیت
-  spr.setFont(&fonts::FreeSans9pt7b);
-  if(myPlant.mood == "thirsty") spr.setTextColor(C_TEMP);
-  else spr.setTextColor(C_GREEN);
-  spr.drawString(myPlant.message, 160, 50);
-  
-  // --- کارت دما (دایره‌ای) ---
-  int cx = 160; int cy = 160;
-  spr.fillSmoothCircle(cx, cy, 60, C_CARD); // پس زمینه دایره
-  spr.drawArc(cx, cy, 55, 45, 0, 360, 0xE71C); // حلقه خاکستری
-  // حلقه دما
-  int angle = map((int)myPlant.temp, 0, 50, 0, 360);
-  spr.drawArc(cx, cy, 55, 45, 0, angle, C_TEMP);
-  
-  spr.setTextColor(C_TEXT);
-  spr.setFont(&fonts::FreeSansBold18pt7b);
-  spr.setTextDatum(MC_DATUM);
-  spr.drawFloat(myPlant.temp, 1, cx, cy);
-  spr.setFont(&fonts::FreeSans9pt7b);
-  spr.drawString("C", cx + 40, cy - 10);
-
-  // --- نوارها ---
-  drawBar(30, 260, 260, 15, myPlant.moisture, C_WATER, "Soil Moisture");
-  drawBar(30, 320, 260, 15, myPlant.sunlight, C_SUN, "Sunlight");
-
-  // --- دکمه ---
-  drawWaterButton(btnPressed);
-
-  spr.pushSprite(0, 0);
-}
-
-// ==========================================
-// 6. ارتباط با سرور
-// ==========================================
-
-void fetchFromServer() {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(SERVER_GET_URL);
-    int httpCode = http.GET();
-    
-    if (httpCode > 0) {
-      String payload = http.getString();
-      StaticJsonDocument<512> doc;
-      deserializeJson(doc, payload);
-      
-      myPlant.moisture = doc["moisture"];
-      myPlant.sunlight = doc["sunlight"];
-      myPlant.temp     = doc["temp"];
-      myPlant.message  = doc["message"].as<String>();
-      myPlant.mood     = doc["mood"].as<String>();
-      
-      updateScreen();
+// رسم آیکون‌های ساده
+void drawIcon(LGFX_Sprite *spr, int x, int y, int type, uint16_t color) {
+  if (type == 0) { // قطره آب
+    spr->fillCircle(x, y+4, 6, color);
+    spr->fillTriangle(x-6, y+4, x+6, y+4, x, y-6, color);
+  } else if (type == 1) { // دما
+    spr->fillCircle(x, y+4, 5, color);
+    spr->fillRect(x-2, y-6, 4, 10, color);
+  } else if (type == 2) { // خورشید
+    spr->fillCircle(x, y, 5, color);
+    for(int i=0; i<8; i++) {
+      float a = i * 45 * 0.01745;
+      spr->drawLine(x, y, x + cos(a)*10, y + sin(a)*10, color);
     }
-    http.end();
-  }
-}
-
-void sendWaterCommand() {
-  if (WiFi.status() == WL_CONNECTED) {
-    // افکت گرافیکی دکمه
-    updateScreen(true);
-    
-    HTTPClient http;
-    http.begin(SERVER_POST_URL);
-    http.addHeader("Content-Type", "application/json");
-    
-    // ارسال جیسون {"action": "WATER"}
-    String json = "{\"action\": \"WATER\"}";
-    http.POST(json);
-    http.end();
-    
-    delay(200); // تاخیر کوتاه برای دیدن افکت کلیک
-    
-    // بلافاصله آپدیت کن تا نتیجه (پر شدن آب) دیده شود
-    fetchFromServer(); 
+  } else if (type == 3) { // ابر (رطوبت)
+    spr->fillCircle(x-4, y, 4, color);
+    spr->fillCircle(x+4, y, 5, color);
+    spr->fillCircle(x, y-3, 5, color);
   }
 }
 
 // ==========================================
-// 7. Setup & Loop
+// انیمیشن و رسم صورت
+// ==========================================
+void updateFaceAnimation() {
+  // 1. منطق پلک زدن
+  if (!isBlinking && millis() - lastBlink > random(2000, 5000)) {
+    isBlinking = true;
+    lastBlink = millis();
+  }
+  if (isBlinking && millis() - lastBlink > 150) {
+    isBlinking = false;
+    lastBlink = millis();
+  }
+
+  // 2. منطق نفس کشیدن (محاسبه Y Offset)
+  breathVal = sin(millis() / 500.0) * 3.0; // نوسان نرم بین -3 تا +3
+}
+
+void drawFaceSprite() {
+  sprFace.fillSprite(C_FACE_BG);
+  
+  int cx = 90; // مرکز صورت در اسپیرایت
+  int cy = 160 + (int)breathVal; // اعمال انیمیشن تنفس
+  
+  // سایه زیر
+  sprFace.fillEllipse(cx, cy + 90, 60, 10, 0xE71C);
+  
+  // صورت اصلی
+  sprFace.fillEllipse(cx, cy, 80, 75, 0xFFFF);
+  sprFace.drawEllipse(cx, cy, 80, 75, C_TEXT);
+
+  // چشم‌ها
+  uint16_t eyeColor = C_TEXT;
+  if (pData.mood == "SAD") {
+    sprFace.fillEllipse(cx - 30, cy, 10, 15, eyeColor);
+    sprFace.fillEllipse(cx + 30, cy, 10, 15, eyeColor);
+    sprFace.fillCircle(cx - 35, cy + 10, 4, C_WATER); // اشک
+  } 
+  else if (pData.mood == "EXCITED") {
+    // چشم ستاره‌ای
+    sprFace.drawString(">", cx - 40, cy - 10, 4);
+    sprFace.drawString("<", cx + 20, cy - 10, 4);
+  }
+  else if (isBlinking || pData.mood == "SLEEPY") {
+    // چشم بسته
+    sprFace.drawArc(cx - 30, cy, 15, 12, 180, 360, eyeColor);
+    sprFace.drawArc(cx + 30, cy, 15, 12, 180, 360, eyeColor);
+    if(pData.mood == "SLEEPY") sprFace.drawString("Zzz", cx + 40, cy - 40);
+  } 
+  else { // HAPPY NORMAL
+    sprFace.fillEllipse(cx - 30, cy, 10, 15, eyeColor);
+    sprFace.fillEllipse(cx + 30, cy, 10, 15, eyeColor);
+    sprFace.fillCircle(cx - 32, cy - 4, 3, 0xFFFF); // برق چشم
+    sprFace.fillCircle(cx + 28, cy - 4, 3, 0xFFFF);
+  }
+
+  // گونه‌ها
+  sprFace.fillEllipse(cx - 45, cy + 15, 10, 6, 0xFDB8);
+  sprFace.fillEllipse(cx + 45, cy + 15, 10, 6, 0xFDB8);
+
+  // دهان
+  if (pData.mood == "SAD") {
+    sprFace.drawArc(cx, cy + 40, 10, 8, 180, 360, eyeColor);
+  } else if (pData.mood == "EXCITED") {
+    sprFace.fillEllipse(cx, cy + 30, 8, 10, C_ACCENT);
+  } else {
+    sprFace.drawArc(cx, cy + 25, 10, 8, 0, 180, eyeColor);
+  }
+  
+  // برگ روی سر
+  sprFace.fillEllipse(cx, cy - 80 + breathVal, 5, 10, C_WATER);
+  sprFace.fillEllipse(cx + 8, cy - 85 + breathVal, 15, 8, C_HUMID);
+
+  sprFace.pushSprite(0, 0); // رسم سمت چپ صفحه
+}
+
+// ==========================================
+// رسم پنل اطلاعات (سمت راست)
 // ==========================================
 
+void drawInfoCard(int x, int y, String title, String val, uint16_t color, int iconType) {
+  // پس زمینه کارت
+  sprData.fillSmoothRoundRect(x, y, 130, 65, 10, C_CARD);
+  
+  // آیکون
+  sprData.fillSmoothCircle(x + 20, y + 32, 14, color);
+  drawIcon(&sprData, x + 20, y + 32, iconType, 0xFFFF);
+  
+  // متن
+  sprData.setTextColor(0x9CD3); // خاکستری روشن
+  sprData.setFont(&fonts::FreeSans9pt7b);
+  sprData.setTextDatum(TL_DATUM);
+  sprData.drawString(title, x + 45, y + 10);
+  
+  sprData.setTextColor(C_TEXT);
+  sprData.setFont(&fonts::FreeSansBold12pt7b);
+  sprData.drawString(val, x + 45, y + 30);
+}
+
+void drawDataSprite() {
+  sprData.fillSprite(C_BG);
+  
+  // عنوان
+  sprData.setTextColor(C_TEXT);
+  sprData.setFont(&fonts::FreeSansBold12pt7b);
+  sprData.setTextDatum(TL_DATUM);
+  sprData.drawString("Plant Status", 10, 10);
+  
+  // شبکه 4 تایی اطلاعات
+  // 1. Soil (رطوبت خاک)
+  drawInfoCard(10, 50, "Soil", String((int)pData.moisture) + "%", C_WATER, 0);
+  
+  // 2. Temp (دما)
+  drawInfoCard(150, 50, "Temp", String(pData.temp, 1) + "c", C_TEMP, 1);
+  
+  // 3. Light (نور)
+  drawInfoCard(10, 125, "Light", String(pData.light) + "%", C_LIGHT, 2);
+  
+  // 4. Humidity (رطوبت هوا)
+  drawInfoCard(150, 125, "Air", String(pData.humidity) + "%", C_HUMID, 3);
+  
+  // نوار وضعیت کلی (Health Bar)
+  sprData.fillSmoothRoundRect(10, 210, 270, 20, 10, 0xE71C);
+  int healthW = map((int)pData.moisture, 0, 100, 0, 270);
+  // افکت انیمیشن نرم برای نوار
+  static float smoothHealth = 0;
+  smoothHealth = lerp(smoothHealth, healthW, 0.1);
+  
+  sprData.fillSmoothRoundRect(10, 210, (int)smoothHealth, 20, 10, C_ACCENT);
+  
+  sprData.setTextColor(0xFFFF);
+  sprData.setFont(&fonts::FreeSansBold9pt7b);
+  sprData.setTextDatum(MC_DATUM);
+  sprData.drawString("OVERALL HEALTH", 145, 221);
+  
+  // دکمه بزرگ پایین
+  sprData.fillSmoothRoundRect(10, 250, 270, 50, 15, C_TEXT);
+  sprData.drawString("WATER ME!", 145, 275);
+
+  sprData.pushSprite(180, 0); // رسم سمت راست صفحه
+}
+
+// ==========================================
+// شبکه و منطق
+// ==========================================
+void fetchData() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  http.begin(String(SERVER_BASE) + "/get-data");
+  if (http.GET() > 0) {
+    String payload = http.getString();
+    StaticJsonDocument<1024> doc;
+    deserializeJson(doc, payload);
+    
+    // ذخیره هدف برای انیمیشن نرم
+    pData.targetMoisture = doc["moisture"];
+    pData.temp = doc["temp"];
+    pData.humidity = doc["humidity"];
+    pData.light = doc["light"];
+    pData.mood = doc["mood"].as<String>();
+  }
+  http.end();
+}
+
+void sendWater() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  http.begin(String(SERVER_BASE) + "/send-touch");
+  http.addHeader("Content-Type", "application/json");
+  http.POST("{\"action\": \"WATER\"}");
+  http.end();
+  
+  // فیدبک فوری
+  pData.mood = "EXCITED";
+  pData.targetMoisture = 100;
+}
+
+// ==========================================
+// Setup & Loop
+// ==========================================
 void setup() {
   Serial.begin(115200);
-
-  tft.init();
-  tft.setRotation(0);
-  spr.createSprite(320, 480);
   
-  // صفحه اتصال
+  tft.init();
+  tft.setRotation(1); // افقی Landscape
   tft.fillScreen(C_BG);
+  
+  // ساخت اسپیرایت‌ها (سایز بهینه شده برای رم)
+  // کل عرض 480 است: 180 پیکسل چپ (صورت) + 300 پیکسل راست (دیتا)
+  sprFace.createSprite(180, 320);
+  sprData.createSprite(300, 320);
+  
+  // صفحه لودینگ
   tft.setTextColor(C_TEXT);
-  tft.drawString("Connecting to WiFi...", 10, 10);
+  tft.drawString("Connecting...", 220, 160);
   
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
+  while(WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   
-  tft.drawString("Connected!", 10, 30);
-  delay(1000);
-  
-  fetchFromServer();
+  fetchData();
 }
 
+unsigned long lastNetCheck = 0;
+
 void loop() {
-  // 1. بررسی تاچ
+  // 1. منطق تاچ (سریع)
   int32_t x, y;
   if (tft.getTouch(&x, &y)) {
-    // اگر مختصات تاچ روی دکمه پایین بود (تقریبی)
-    if (y > 380 && y < 440 && x > 40 && x < 280) {
-      sendWaterCommand();
+    // دکمه آب در مختصات خاصی قرار دارد
+    // Sprite دیتا از x=180 شروع می‌شود. دکمه در Sprite در y=250 است.
+    // پس روی صفحه اصلی: x > 190 و y > 250
+    if (x > 190 && y > 250 && y < 310) {
+       sprData.fillSmoothRoundRect(10, 250, 270, 50, 15, C_ACCENT); // تغییر رنگ دکمه
+       sprData.pushSprite(180, 0);
+       sendWater();
+       delay(200); // مکث کوتاه برای حس کلیک
     }
   }
 
-  // 2. آپدیت خودکار هر 2 ثانیه
-  if (millis() - lastCheck > 2000) {
-    fetchFromServer();
-    lastCheck = millis();
+  // 2. انیمیشن مقادیر (نرم شدن تغییر عدد رطوبت)
+  pData.moisture = lerp(pData.moisture, pData.targetMoisture, 0.05);
+
+  // 3. آپدیت گرافیک (سریع - 30 فریم بر ثانیه)
+  updateFaceAnimation();
+  drawFaceSprite();
+  drawDataSprite();
+
+  // 4. دریافت اطلاعات از سرور (کند - هر 2 ثانیه)
+  if (millis() - lastNetCheck > 2000) {
+    fetchData();
+    lastNetCheck = millis();
   }
 }
