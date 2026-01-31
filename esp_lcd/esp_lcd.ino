@@ -18,7 +18,7 @@
 const char* WIFI_SSID     = "arvinshokouhi";      
 const char* WIFI_PASS     = "Arvin1384"; 
 // **مهم**: IP سیستم خود را جایگزین کنید
-const char* SERVER_BASE   = "http://10.156.45.197:8000"; 
+const char* SERVER_BASE   = "10.156.45.78:8000"; 
 
 // --- رنگ‌ها ---
 #define C_BG_PLANT  0xF7F9 
