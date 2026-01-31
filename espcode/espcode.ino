@@ -1,33 +1,27 @@
 /**
  * ============================================================================
- *  Project: Ultimate Kawaii Plant Monitor (Smooth & Info Rich)
+ *  Project: Ultimate Kawaii Plant Monitor (ESP-NOW Receiver)
  *  Hardware: ESP32-S3 + ILI9488 + XPT2046
- *  Features: Smooth Animations, 4-Data Grid, Modern UI
+ *  Input: Receives Light Data via ESP-NOW from another ESP
  * ============================================================================
  */
 
 #include <LovyanGFX.hpp>
 #include <WiFi.h>
-#include <HTTPClient.h>
-#include <ArduinoJson.h>
+#include <esp_now.h>
 
-// --- تنظیمات ---
-const char* WIFI_SSID     = "arvinshokouhi";      
-const char* WIFI_PASS     = "Arvin1384"; 
-const char* SERVER_BASE   = "http://10.156.45.197:8000"; // IP سرور خود را چک کنید
+// --- تنظیمات رنگ ---
+#define C_BG        0xF7F9 
+#define C_FACE_BG   0xFFFA 
+#define C_CARD      0xFFFF 
+#define C_TEXT      0x39E7 
+#define C_ACCENT    0xFB56 
+#define C_WATER     0x4D19 
+#define C_TEMP      0xFC00 
+#define C_HUMID     0x867F 
+#define C_LIGHT     0xFE60 
 
-// --- رنگ‌های پاستلی مدرن ---
-#define C_BG        0xF7F9 // سفید مایل به آبی
-#define C_FACE_BG   0xFFFA // صورتی خیلی محو
-#define C_CARD      0xFFFF // سفید مطلق
-#define C_TEXT      0x39E7 // خاکستری تیره
-#define C_ACCENT    0xFB56 // صورتی جیغ (برای هایلایت)
-#define C_WATER     0x4D19 // آبی اقیانوسی
-#define C_TEMP      0xFC00 // نارنجی
-#define C_HUMID     0x867F // بنفش ملایم
-#define C_LIGHT     0xFE60 // زرد
-
-// --- درایور نمایشگر ---
+// --- درایور نمایشگر (بدون تغییر) ---
 class KawaiiDisplay : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9488 _panel_instance;
   lgfx::Bus_Parallel16 _bus_instance;
@@ -68,16 +62,22 @@ public:
 };
 
 KawaiiDisplay tft;
-// دو اسپیرایت جداگانه برای مدیریت بهتر رم
-LGFX_Sprite sprFace(&tft); // اسپیرایت صورت (چپ)
-LGFX_Sprite sprData(&tft); // اسپیرایت دیتا (راست)
+LGFX_Sprite sprFace(&tft);
+LGFX_Sprite sprData(&tft);
 
 // --- متغیرهای دیتا ---
+// ساختار دیتای دریافتی (باید با فرستنده یکی باشد)
+typedef struct struct_message {
+  float lux;
+} struct_message;
+
+struct_message incomingData;
+
 struct PlantData {
-  float moisture = 0; float targetMoisture = 0;
-  float temp = 0;
-  int humidity = 0;
-  int light = 0;
+  float moisture = 50; // مقدار پیش‌فرض چون سنسور رطوبت نداریم
+  float temp = 25.0;   // مقدار پیش‌فرض
+  int humidity = 40;   // مقدار پیش‌فرض
+  float light = 0;       // این از GY-30 میاد
   String mood = "HAPPY";
 };
 PlantData pData;
@@ -85,18 +85,34 @@ PlantData pData;
 // --- متغیرهای انیمیشن ---
 unsigned long lastBlink = 0;
 bool isBlinking = false;
-float breathVal = 0; // برای بالا پایین رفتن صورت
+float breathVal = 0;
 
 // ==========================================
-// توابع کمکی گرافیک
+// توابع ESP-NOW
 // ==========================================
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingDataPtr, int len) {
+  memcpy(&incomingData, incomingDataPtr, sizeof(incomingData));
+  
+  // بروزرسانی مقدار نور
+  pData.light = incomingData.lux;
+  
+  // منطق ساده برای تغییر Mood بر اساس نور (چون سرور نداریم)
+  if (pData.light < 10) {
+    pData.mood = "SLEEPY";
+  } else if (pData.light > 1000) {
+    pData.mood = "EXCITED";
+  } else {
+    pData.mood = "HAPPY";
+  }
+}
 
-// تابع Lerp برای حرکت نرم اعداد (Linear Interpolation)
+// ==========================================
+// توابع گرافیک (مشابه قبل با تغییرات جزئی)
+// ==========================================
 float lerp(float start, float end, float t) {
   return start + (end - start) * t;
 }
 
-// رسم آیکون‌های ساده
 void drawIcon(LGFX_Sprite *spr, int x, int y, int type, uint16_t color) {
   if (type == 0) { // قطره آب
     spr->fillCircle(x, y+4, 6, color);
@@ -117,67 +133,50 @@ void drawIcon(LGFX_Sprite *spr, int x, int y, int type, uint16_t color) {
   }
 }
 
-// ==========================================
-// انیمیشن و رسم صورت
-// ==========================================
 void updateFaceAnimation() {
-  // 1. منطق پلک زدن
   if (!isBlinking && millis() - lastBlink > random(2000, 5000)) {
-    isBlinking = true;
-    lastBlink = millis();
+    isBlinking = true; lastBlink = millis();
   }
   if (isBlinking && millis() - lastBlink > 150) {
-    isBlinking = false;
-    lastBlink = millis();
+    isBlinking = false; lastBlink = millis();
   }
-
-  // 2. منطق نفس کشیدن (محاسبه Y Offset)
-  breathVal = sin(millis() / 500.0) * 3.0; // نوسان نرم بین -3 تا +3
+  breathVal = sin(millis() / 500.0) * 3.0;
 }
 
 void drawFaceSprite() {
   sprFace.fillSprite(C_FACE_BG);
+  int cx = 90; 
+  int cy = 160 + (int)breathVal;
   
-  int cx = 90; // مرکز صورت در اسپیرایت
-  int cy = 160 + (int)breathVal; // اعمال انیمیشن تنفس
-  
-  // سایه زیر
   sprFace.fillEllipse(cx, cy + 90, 60, 10, 0xE71C);
-  
-  // صورت اصلی
   sprFace.fillEllipse(cx, cy, 80, 75, 0xFFFF);
   sprFace.drawEllipse(cx, cy, 80, 75, C_TEXT);
 
-  // چشم‌ها
   uint16_t eyeColor = C_TEXT;
   if (pData.mood == "SAD") {
     sprFace.fillEllipse(cx - 30, cy, 10, 15, eyeColor);
     sprFace.fillEllipse(cx + 30, cy, 10, 15, eyeColor);
-    sprFace.fillCircle(cx - 35, cy + 10, 4, C_WATER); // اشک
+    sprFace.fillCircle(cx - 35, cy + 10, 4, C_WATER);
   } 
   else if (pData.mood == "EXCITED") {
-    // چشم ستاره‌ای
     sprFace.drawString(">", cx - 40, cy - 10, 4);
     sprFace.drawString("<", cx + 20, cy - 10, 4);
   }
   else if (isBlinking || pData.mood == "SLEEPY") {
-    // چشم بسته
     sprFace.drawArc(cx - 30, cy, 15, 12, 180, 360, eyeColor);
     sprFace.drawArc(cx + 30, cy, 15, 12, 180, 360, eyeColor);
     if(pData.mood == "SLEEPY") sprFace.drawString("Zzz", cx + 40, cy - 40);
   } 
-  else { // HAPPY NORMAL
+  else { 
     sprFace.fillEllipse(cx - 30, cy, 10, 15, eyeColor);
     sprFace.fillEllipse(cx + 30, cy, 10, 15, eyeColor);
-    sprFace.fillCircle(cx - 32, cy - 4, 3, 0xFFFF); // برق چشم
+    sprFace.fillCircle(cx - 32, cy - 4, 3, 0xFFFF);
     sprFace.fillCircle(cx + 28, cy - 4, 3, 0xFFFF);
   }
 
-  // گونه‌ها
   sprFace.fillEllipse(cx - 45, cy + 15, 10, 6, 0xFDB8);
   sprFace.fillEllipse(cx + 45, cy + 15, 10, 6, 0xFDB8);
 
-  // دهان
   if (pData.mood == "SAD") {
     sprFace.drawArc(cx, cy + 40, 10, 8, 180, 360, eyeColor);
   } else if (pData.mood == "EXCITED") {
@@ -186,27 +185,18 @@ void drawFaceSprite() {
     sprFace.drawArc(cx, cy + 25, 10, 8, 0, 180, eyeColor);
   }
   
-  // برگ روی سر
   sprFace.fillEllipse(cx, cy - 80 + breathVal, 5, 10, C_WATER);
   sprFace.fillEllipse(cx + 8, cy - 85 + breathVal, 15, 8, C_HUMID);
 
-  sprFace.pushSprite(0, 0); // رسم سمت چپ صفحه
+  sprFace.pushSprite(0, 0);
 }
 
-// ==========================================
-// رسم پنل اطلاعات (سمت راست)
-// ==========================================
-
 void drawInfoCard(int x, int y, String title, String val, uint16_t color, int iconType) {
-  // پس زمینه کارت
   sprData.fillSmoothRoundRect(x, y, 130, 65, 10, C_CARD);
-  
-  // آیکون
   sprData.fillSmoothCircle(x + 20, y + 32, 14, color);
   drawIcon(&sprData, x + 20, y + 32, iconType, 0xFFFF);
   
-  // متن
-  sprData.setTextColor(0x9CD3); // خاکستری روشن
+  sprData.setTextColor(0x9CD3);
   sprData.setFont(&fonts::FreeSans9pt7b);
   sprData.setTextDatum(TL_DATUM);
   sprData.drawString(title, x + 45, y + 10);
@@ -219,134 +209,77 @@ void drawInfoCard(int x, int y, String title, String val, uint16_t color, int ic
 void drawDataSprite() {
   sprData.fillSprite(C_BG);
   
-  // عنوان
   sprData.setTextColor(C_TEXT);
   sprData.setFont(&fonts::FreeSansBold12pt7b);
   sprData.setTextDatum(TL_DATUM);
   sprData.drawString("Plant Status", 10, 10);
   
-  // شبکه 4 تایی اطلاعات
-  // 1. Soil (رطوبت خاک)
-  drawInfoCard(10, 50, "Soil", String((int)pData.moisture) + "%", C_WATER, 0);
+  // مقادیر ثابت (چون سنسور نداریم)
+  drawInfoCard(10, 50, "Soil", "--", C_WATER, 0);
+  drawInfoCard(150, 50, "Temp", "--", C_TEMP, 1);
   
-  // 2. Temp (دما)
-  drawInfoCard(150, 50, "Temp", String(pData.temp, 1) + "c", C_TEMP, 1);
+  // مقدار نور که از GY-30 می‌آید (Lux)
+  String lightStr = String((int)pData.light);
+  if(pData.light > 999) lightStr = String((int)pData.light / 1000) + "k"; // فرمت کردن اعداد بزرگ
   
-  // 3. Light (نور)
-  drawInfoCard(10, 125, "Light", String(pData.light) + "%", C_LIGHT, 2);
+  drawInfoCard(10, 125, "Lux", lightStr, C_LIGHT, 2);
+  drawInfoCard(150, 125, "Air", "--", C_HUMID, 3);
   
-  // 4. Humidity (رطوبت هوا)
-  drawInfoCard(150, 125, "Air", String(pData.humidity) + "%", C_HUMID, 3);
-  
-  // نوار وضعیت کلی (Health Bar)
+  // Health Bar (فعلا ثابت)
   sprData.fillSmoothRoundRect(10, 210, 270, 20, 10, 0xE71C);
-  int healthW = map((int)pData.moisture, 0, 100, 0, 270);
-  // افکت انیمیشن نرم برای نوار
-  static float smoothHealth = 0;
-  smoothHealth = lerp(smoothHealth, healthW, 0.1);
-  
-  sprData.fillSmoothRoundRect(10, 210, (int)smoothHealth, 20, 10, C_ACCENT);
+  sprData.fillSmoothRoundRect(10, 210, 200, 20, 10, C_ACCENT);
   
   sprData.setTextColor(0xFFFF);
   sprData.setFont(&fonts::FreeSansBold9pt7b);
   sprData.setTextDatum(MC_DATUM);
-  sprData.drawString("OVERALL HEALTH", 145, 221);
+  sprData.drawString("GY-30 ACTIVE", 145, 221);
   
-  // دکمه بزرگ پایین
+  // دکمه پایین
   sprData.fillSmoothRoundRect(10, 250, 270, 50, 15, C_TEXT);
-  sprData.drawString("WATER ME!", 145, 275);
+  sprData.drawString("NO SERVER", 145, 275);
 
-  sprData.pushSprite(180, 0); // رسم سمت راست صفحه
+  sprData.pushSprite(180, 0);
 }
 
-// ==========================================
-// شبکه و منطق
-// ==========================================
-void fetchData() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  http.begin(String(SERVER_BASE) + "/get-data");
-  if (http.GET() > 0) {
-    String payload = http.getString();
-    StaticJsonDocument<1024> doc;
-    deserializeJson(doc, payload);
-    
-    // ذخیره هدف برای انیمیشن نرم
-    pData.targetMoisture = doc["moisture"];
-    pData.temp = doc["temp"];
-    pData.humidity = doc["humidity"];
-    pData.light = doc["light"];
-    pData.mood = doc["mood"].as<String>();
-  }
-  http.end();
-}
-
-void sendWater() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  http.begin(String(SERVER_BASE) + "/send-touch");
-  http.addHeader("Content-Type", "application/json");
-  http.POST("{\"action\": \"WATER\"}");
-  http.end();
-  
-  // فیدبک فوری
-  pData.mood = "EXCITED";
-  pData.targetMoisture = 100;
-}
-
-// ==========================================
-// Setup & Loop
-// ==========================================
 void setup() {
   Serial.begin(115200);
   
   tft.init();
-  tft.setRotation(1); // افقی Landscape
+  tft.setRotation(1); 
   tft.fillScreen(C_BG);
   
-  // ساخت اسپیرایت‌ها (سایز بهینه شده برای رم)
-  // کل عرض 480 است: 180 پیکسل چپ (صورت) + 300 پیکسل راست (دیتا)
   sprFace.createSprite(180, 320);
   sprData.createSprite(300, 320);
   
-  // صفحه لودینگ
   tft.setTextColor(C_TEXT);
-  tft.drawString("Connecting...", 220, 160);
+  tft.drawString("ESP-NOW Init...", 200, 160);
   
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while(WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  // راه‌اندازی وای‌فای در حالت Station (الزامی برای ESP-NOW)
+  WiFi.mode(WIFI_STA);
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    tft.drawString("Error ESP-NOW", 200, 180);
+    return;
+  }
   
-  fetchData();
+  // ثبت تابع دریافت
+  esp_now_register_recv_cb(OnDataRecv);
 }
 
-unsigned long lastNetCheck = 0;
-
 void loop() {
-  // 1. منطق تاچ (سریع)
+  // تاچ اسکرین (فقط برای افکت بصری، چون سروری نیست)
   int32_t x, y;
   if (tft.getTouch(&x, &y)) {
-    // دکمه آب در مختصات خاصی قرار دارد
-    // Sprite دیتا از x=180 شروع می‌شود. دکمه در Sprite در y=250 است.
-    // پس روی صفحه اصلی: x > 190 و y > 250
     if (x > 190 && y > 250 && y < 310) {
-       sprData.fillSmoothRoundRect(10, 250, 270, 50, 15, C_ACCENT); // تغییر رنگ دکمه
+       sprData.fillSmoothRoundRect(10, 250, 270, 50, 15, C_ACCENT);
        sprData.pushSprite(180, 0);
-       sendWater();
-       delay(200); // مکث کوتاه برای حس کلیک
+       pData.mood = "EXCITED"; // تغییر مود با کلیک
+       delay(200); 
     }
   }
 
-  // 2. انیمیشن مقادیر (نرم شدن تغییر عدد رطوبت)
-  pData.moisture = lerp(pData.moisture, pData.targetMoisture, 0.05);
-
-  // 3. آپدیت گرافیک (سریع - 30 فریم بر ثانیه)
   updateFaceAnimation();
   drawFaceSprite();
   drawDataSprite();
-
-  // 4. دریافت اطلاعات از سرور (کند - هر 2 ثانیه)
-  if (millis() - lastNetCheck > 2000) {
-    fetchData();
-    lastNetCheck = millis();
-  }
 }
