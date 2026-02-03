@@ -1,20 +1,31 @@
-# server.py
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
-app = FastAPI(title="Plant Bridge Server", version="2.0.0")
+app = FastAPI(title="Plant Bridge Server", version="2.1.0")
 
+# ---------- MongoDB ----------
+client = AsyncIOMotorClient("mongodb://localhost:27017")
+db = client["plant_monitor"]
 
-# ---------- مدل‌های داده ----------
+sensor_col = db["sensor_data"]
+task_col = db["tasks"]
+
+# ---------- Models ----------
 class SensorPayload(BaseModel):
-    moisture: float = Field(..., ge=0, le=100, description="Percent moisture 0-100")
-    temp: float = Field(..., ge=-40, le=80, description="Temperature in °C")
-    humidity: float = Field(..., ge=0, le=100, description="Relative humidity 0-100")
-    light: float = Field(..., ge=0, le=1000, description="Light level (arbitrary scale 0-1000)")
-    mood: Optional[str] = Field(None, description="Optional pre-computed plant mood by sensor")
+    moisture: float = Field(..., ge=0, le=100)
+    temp: float = Field(..., ge=-40, le=80)
+    humidity: float = Field(..., ge=0, le=100)
+    light: float = Field(..., ge=0, le=1000)
+    mood: Optional[str] = None
+
+
+class Task(BaseModel):
+    name: str
+    done: bool = False
 
 
 class TaskIdx(BaseModel):
@@ -25,24 +36,7 @@ class Action(BaseModel):
     action: str
 
 
-# ---------- وضعیت در حافظه ----------
-data_store = {
-    "moisture": None,
-    "temp": None,
-    "humidity": None,
-    "light": None,
-    "mood": "UNKNOWN",
-    "last_update": None,
-    "tasks": [
-        {"name": "Water Plants", "done": False},
-        {"name": "Check Bugs", "done": True},
-        {"name": "Mist Leaves", "done": False},
-        {"name": "Talk to Plant", "done": False},
-    ],
-}
-
-
-# ---------- توابع کمکی ----------
+# ---------- Utils ----------
 def compute_mood(moisture: float, temp: float) -> str:
     if moisture < 30:
         return "SAD"
@@ -51,58 +45,78 @@ def compute_mood(moisture: float, temp: float) -> str:
     return "HAPPY"
 
 
-# ---------- آندپوینت‌ها ----------
-@app.post("/update-data", summary="دریافت داده از ESP سنسور")
+# ---------- Endpoints ----------
+@app.post("/update-data")
 async def update_data(payload: SensorPayload):
-    data_store["moisture"] = round(payload.moisture, 2)
-    data_store["temp"] = round(payload.temp, 2)
-    data_store["humidity"] = round(payload.humidity, 2)
-    data_store["light"] = round(payload.light, 2)
+    mood = payload.mood.upper() if payload.mood else compute_mood(payload.moisture, payload.temp)
 
-    if payload.mood:
-        data_store["mood"] = payload.mood.upper()
-    else:
-        data_store["mood"] = compute_mood(payload.moisture, payload.temp)
+    doc = {
+        "moisture": round(payload.moisture, 2),
+        "temp": round(payload.temp, 2),
+        "humidity": round(payload.humidity, 2),
+        "light": round(payload.light, 2),
+        "mood": mood,
+        "timestamp": datetime.utcnow(),
+    }
 
-    data_store["last_update"] = datetime.utcnow().isoformat() + "Z"
+    await sensor_col.insert_one(doc)
+    return {"status": "stored", "data": doc}
 
+
+@app.get("/get-data")
+async def get_data():
+    sensor = await sensor_col.find().sort("timestamp", -1).to_list(1)
+    if not sensor:
+        raise HTTPException(404, "No sensor data")
+
+    tasks = []
+    async for t in task_col.find():
+        t["id"] = str(t["_id"])
+        t.pop("_id")
+        tasks.append(t)
+
+    sensor[0].pop("_id")
     return {
-        "status": "accepted",
-        "stored": {
-            "moisture": data_store["moisture"],
-            "temp": data_store["temp"],
-            "humidity": data_store["humidity"],
-            "light": data_store["light"],
-            "mood": data_store["mood"],
-            "last_update": data_store["last_update"],
-        },
+        "sensor": sensor[0],
+        "tasks": tasks
     }
 
 
-@app.get("/get-data", summary="ارسال آخرین داده برای ESP-S3")
-async def get_data():
-    if data_store["last_update"] is None:
-        raise HTTPException(status_code=404, detail="No sensor data received yet.")
-    return data_store
-
-
-@app.post("/toggle-task", summary="تغییر وضعیت کارها")
+@app.post("/toggle-task")
 async def toggle_task(item: TaskIdx):
-    idx = item.index
-    if not (0 <= idx < len(data_store["tasks"])):
-        raise HTTPException(status_code=400, detail="Task index out of range.")
-    data_store["tasks"][idx]["done"] = not data_store["tasks"][idx]["done"]
-    return {"tasks": data_store["tasks"]}
+    tasks = await task_col.find().to_list(None)
+    if not (0 <= item.index < len(tasks)):
+        raise HTTPException(400, "Index out of range")
+
+    task = tasks[item.index]
+    await task_col.update_one(
+        {"_id": task["_id"]},
+        {"$set": {"done": not task["done"]}}
+    )
+    return {"status": "updated"}
 
 
-@app.post("/send-touch", summary="دستور لمس/آب‌دهی از سمت کاربر")
+@app.post("/add-task")
+async def add_task(task: Task):
+    await task_col.insert_one(task.dict())
+    return {"status": "task added"}
+
+
+@app.post("/send-touch")
 async def send_action(act: Action):
     if act.action.upper() == "WATER":
-        data_store["moisture"] = 100.0
-        data_store["mood"] = "EXCITED"
-        data_store["last_update"] = datetime.utcnow().isoformat() + "Z"
-        return {"status": "ok", "message": "Moisture set to 100"}
-    return {"status": "ignored", "message": f"Action {act.action} not recognized."}
+        doc = {
+            "moisture": 100.0,
+            "temp": None,
+            "humidity": None,
+            "light": None,
+            "mood": "EXCITED",
+            "timestamp": datetime.utcnow(),
+            "manual": True
+        }
+        await sensor_col.insert_one(doc)
+        return {"status": "ok", "message": "Plant watered"}
+    return {"status": "ignored"}
 
 
 if __name__ == "__main__":

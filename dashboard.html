@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Plant Dashboard</title>
+<style>
+body {
+    font-family: sans-serif;
+    background: #eef2f3;
+    padding: 20px;
+}
+.card {
+    background: white;
+    padding: 15px;
+    border-radius: 10px;
+    margin-bottom: 15px;
+}
+button {
+    padding: 6px 10px;
+    margin-top: 5px;
+}
+.done {
+    text-decoration: line-through;
+    color: gray;
+}
+</style>
+</head>
+
+<body>
+
+<h1>🌱 Plant Monitor</h1>
+
+<div class="card">
+    <h3>Sensor Data</h3>
+    <pre id="sensor">Loading...</pre>
+</div>
+
+<div class="card">
+    <h3>Tasks</h3>
+    <div id="tasks"></div>
+    <input id="taskName" placeholder="New task">
+    <button onclick="addTask()">Add</button>
+</div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+async function loadData() {
+    const res = await fetch(API + "/get-data");
+    const data = await res.json();
+
+    document.getElementById("sensor").innerText =
+        JSON.stringify(data.sensor, null, 2);
+
+    const tdiv = document.getElementById("tasks");
+    tdiv.innerHTML = "";
+    data.tasks.forEach((t, i) => {
+        tdiv.innerHTML += `
+            <div class="${t.done ? 'done' : ''}">
+                <input type="checkbox" ${t.done ? 'checked' : ''} 
+                onclick="toggle(${i})">
+                ${t.name}
+            </div>`;
+    });
+}
+
+async function toggle(i) {
+    await fetch(API + "/toggle-task", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({index: i})
+    });
+    loadData();
+}
+
+async function addTask() {
+    const name = document.getElementById("taskName").value;
+    await fetch(API + "/add-task", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name})
+    });
+    loadData();
+}
+
+loadData();
+</script>
+
+</body>
+</html>
