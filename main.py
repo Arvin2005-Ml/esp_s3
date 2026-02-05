@@ -1,123 +1,112 @@
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+# main.py
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
 from datetime import datetime
-from typing import Optional, List
+import random
 
-app = FastAPI(title="Plant Bridge Server", version="2.1.0")
+app = FastAPI(title="Kawaii Plant Monitor")
 
-# ---------- MongoDB ----------
-client = AsyncIOMotorClient("mongodb://localhost:27017")
-db = client["plant_monitor"]
+# تنظیمات CORS (برای امنیت و جلوگیری از خطا در مرورگر)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-sensor_col = db["sensor_data"]
-task_col = db["tasks"]
+# کانکشن دیتابیس
+MONGO_URL = "mongodb://localhost:27017"
+client = AsyncIOMotorClient(MONGO_URL)
+db = client["kawaii_plant"]
+sensor_collection = db["sensor_data"]
+task_collection = db["tasks"]
 
-# ---------- Models ----------
-class SensorPayload(BaseModel):
-    moisture: float = Field(..., ge=0, le=100)
-    temp: float = Field(..., ge=-40, le=80)
-    humidity: float = Field(..., ge=0, le=100)
-    light: float = Field(..., ge=0, le=1000)
-    mood: Optional[str] = None
+# --- Models ---
+class SensorData(BaseModel):
+    temperature: float
+    humidity: float
+    moisture: float
 
+class TaskCreate(BaseModel):
+    title: str
 
-class Task(BaseModel):
-    name: str
-    done: bool = False
+# --- Utils ---
+def serialize(doc):
+    if not doc: return None
+    doc["_id"] = str(doc["_id"])
+    if "timestamp" in doc and isinstance(doc["timestamp"], datetime):
+        doc["timestamp"] = doc["timestamp"].isoformat()
+    return doc
 
+def calculate_mood(moisture: float):
+    if moisture > 80: return "EXCITED"
+    elif moisture > 50: return "HAPPY"
+    elif moisture > 30: return "SLEEPY"
+    else: return "SAD"
 
-class TaskIdx(BaseModel):
-    index: int
+# --- Endpoints ---
 
-
-class Action(BaseModel):
-    action: str
-
-
-# ---------- Utils ----------
-def compute_mood(moisture: float, temp: float) -> str:
-    if moisture < 30:
-        return "SAD"
-    if temp > 30:
-        return "HOT"
-    return "HAPPY"
-
-
-# ---------- Endpoints ----------
 @app.post("/update-data")
-async def update_data(payload: SensorPayload):
-    mood = payload.mood.upper() if payload.mood else compute_mood(payload.moisture, payload.temp)
-
+async def update_data(data: SensorData):
+    mood = calculate_mood(data.moisture)
     doc = {
-        "moisture": round(payload.moisture, 2),
-        "temp": round(payload.temp, 2),
-        "humidity": round(payload.humidity, 2),
-        "light": round(payload.light, 2),
+        "temperature": data.temperature,
+        "humidity": data.humidity,
+        "moisture": data.moisture,
+        "light": random.randint(20, 100),
         "mood": mood,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.utcnow()
     }
-
-    await sensor_col.insert_one(doc)
-    return {"status": "stored", "data": doc}
-
+    await sensor_collection.insert_one(doc)
+    return {"status": "ok", "mood": mood}
 
 @app.get("/get-data")
 async def get_data():
-    sensor = await sensor_col.find().sort("timestamp", -1).to_list(1)
-    if not sensor:
-        raise HTTPException(404, "No sensor data")
-
-    tasks = []
-    async for t in task_col.find():
-        t["id"] = str(t["_id"])
-        t.pop("_id")
-        tasks.append(t)
-
-    sensor[0].pop("_id")
+    latest = await sensor_collection.find_one(sort=[("timestamp", -1)])
+    if not latest:
+        latest = {"temperature": 0, "humidity": 0, "moisture": 0, "light": 0, "mood": "SAD"}
+    
+    tasks = await task_collection.find().to_list(100)
     return {
-        "sensor": sensor[0],
-        "tasks": tasks
+        "sensor": serialize(latest),
+        "tasks": [serialize(t) for t in tasks]
     }
 
-
-@app.post("/toggle-task")
-async def toggle_task(item: TaskIdx):
-    tasks = await task_col.find().to_list(None)
-    if not (0 <= item.index < len(tasks)):
-        raise HTTPException(400, "Index out of range")
-
-    task = tasks[item.index]
-    await task_col.update_one(
-        {"_id": task["_id"]},
-        {"$set": {"done": not task["done"]}}
-    )
-    return {"status": "updated"}
-
+# --- بخش جدید برای نمودار ---
+@app.get("/get-history")
+async def get_history():
+    # دریافت ۵۰ رکورد آخر برای نمودار
+    cursor = sensor_collection.find().sort("timestamp", -1).limit(20)
+    history = await cursor.to_list(length=20)
+    # معکوس کردن لیست تا زمان از چپ به راست باشد
+    return [serialize(doc) for doc in history][::-1]
 
 @app.post("/add-task")
-async def add_task(task: Task):
-    await task_col.insert_one(task.dict())
+async def add_task(task: TaskCreate):
+    doc = {"title": task.title, "done": False, "created_at": datetime.utcnow()}
+    await task_collection.insert_one(doc)
     return {"status": "task added"}
 
+@app.post("/toggle-task/{task_id}")
+async def toggle_task(task_id: str):
+    try:
+        await task_collection.update_one(
+            {"_id": ObjectId(task_id)},
+            {"$bit": {"done": {"xor": 1}}}
+        )
+        return {"status": "toggled"}
+    except:
+        return {"status": "error"}
 
-@app.post("/send-touch")
-async def send_action(act: Action):
-    if act.action.upper() == "WATER":
-        doc = {
-            "moisture": 100.0,
-            "temp": None,
-            "humidity": None,
-            "light": None,
-            "mood": "EXCITED",
-            "timestamp": datetime.utcnow(),
-            "manual": True
-        }
-        await sensor_col.insert_one(doc)
-        return {"status": "ok", "message": "Plant watered"}
-    return {"status": "ignored"}
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    with open("dashboard.html", "r", encoding="utf-8") as f:
+        return f.read()
 
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# اجرای برنامه با دستور زیر در ترمینال:
+# uvicorn main:app --reload

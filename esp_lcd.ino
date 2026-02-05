@@ -1,11 +1,8 @@
 /**
  * ============================================================================
- *  Project: Kawaii Plant Monitor (FINAL COMPLETE VERSION)
- *  Features: 
- *    1. Stable WiFi & RAM (Small Sprite)
- *    2. Working Task Manager (Swipe Up)
- *    3. Direct Drawing for UI (No Flicker)
- *    4. Smooth Face Animation
+ *  Project: EMO Style Plant Monitor (Cyclic Data + Dynamic Eyes)
+ *  Hardware: ESP32-S3 + ILI9488 (Parallel) + XPT2046 (SPI3)
+ *  Date: 1404/11/16
  * ============================================================================
  */
 
@@ -13,23 +10,23 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <vector>
 
-// --- تنظیمات ---
+// --- تنظیمات وای‌فای و سرور ---
 const char* WIFI_SSID     = "arvinshokouhi";      
 const char* WIFI_PASS     = "Arvin1384"; 
-// **مهم**: IP سیستم خود را جایگزین کنید
-const char* SERVER_BASE   = "10.156.45.78:8000"; 
+const char* SERVER_BASE   = "http://10.156.45.78:8000"; 
 
-// --- رنگ‌ها ---
-#define C_BG_PLANT  0xF7F9 
-#define C_BG_TASK   0xE0F7 
-#define C_FACE_BG   0xF7F9 
-#define C_CARD      0xFFFF 
-#define C_TEXT      0x39E7 
-#define C_ACCENT    0xFB56 
-#define C_CHECK     0x2E8B 
+// --- رنگ‌های استایل EMO ---
+#define C_BLACK     0x0000
+#define C_WHITE     0xFFFF
+#define C_EMO_BLUE  0x07FF  // Cyan Neon
+#define C_EMO_GREEN 0x07E0  // Happy
+#define C_EMO_RED   0xF800  // Angry/Alert
+#define C_EMO_PURPLE 0xF81F // Sleepy/Confused
+#define C_BG_TASKS  0x2124  // Dark Gray
 
-// --- درایور نمایشگر (ILI9488 Parallel) ---
+// --- درایور نمایشگر (دقیقاً طبق سخت‌افزار شما) ---
 class KawaiiDisplay : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9488 _panel_instance;
   lgfx::Bus_Parallel16 _bus_instance;
@@ -55,13 +52,21 @@ public:
       cfg.readable = true; cfg.dlen_16bit = true;
       _panel_instance.config(cfg);
     }
+    
+    // کانفیگ تاچ
     {
       auto cfg = _touch_instance.config();
-      cfg.x_min = 300; cfg.x_max = 3800;
-      cfg.y_min = 200; cfg.y_max = 3700;
-      cfg.bus_shared = true;
-      cfg.spi_host = SPI2_HOST; cfg.freq = 2500000;
-      cfg.pin_sclk = 47; cfg.pin_mosi = 48; cfg.pin_miso = 20; cfg.pin_cs = 2;         
+      cfg.x_min      = 0;   cfg.x_max      = 319;
+      cfg.y_min      = 0;   cfg.y_max      = 479;
+      cfg.pin_int    = 1;   
+      cfg.bus_shared = false;
+      cfg.offset_rotation = 0;
+      cfg.spi_host = SPI3_HOST; 
+      cfg.freq     = 1000000;   
+      cfg.pin_sclk = 47;        
+      cfg.pin_mosi = 48;        
+      cfg.pin_miso = 20;        
+      cfg.pin_cs   = 2;         
       _touch_instance.config(cfg);
       _panel_instance.setTouch(&_touch_instance);
     }
@@ -70,48 +75,75 @@ public:
 };
 
 KawaiiDisplay tft;
-LGFX_Sprite sprFace(&tft); // اسپیرایت کوچک برای صورت (RAM Safe)
+LGFX_Sprite spr(&tft); // اسپریت اصلی برای جلوگیری از پرپر زدن (Flicker)
 
-// --- متغیرها ---
-struct TaskItem { String name; bool done; };
+// --- ساختار داده ---
+struct TaskItem { String id; String name; bool done; };
+
 struct AppData {
-  float moisture; float temp; int humidity; int light;
-  String mood = "HAPPY";
+  float moisture = 0; 
+  float temp = 0; 
+  int humidity = 0; 
+  int light = 0;
+  String mood = "NEUTRAL"; 
   std::vector<TaskItem> tasks;
+  bool isWatering = false;
 };
 AppData appData;
 
-enum ScreenMode { SCREEN_PLANT, SCREEN_TASKS };
-ScreenMode currentScreen = SCREEN_PLANT;
+// --- وضعیت صفحات ---
+enum ScreenMode { SCREEN_MAIN, SCREEN_TASKS }; // Stats حذف شد چون در صفحه اصلی ادغام شده
+ScreenMode currentScreen = SCREEN_MAIN;
 
-float breathVal = 0;
-bool isBlinking = false;
+// --- متغیرهای انیمیشن و چرخش اطلاعات ---
 unsigned long lastBlink = 0;
+bool isBlinking = false;
+int eyeHeight = 80;
+
+// چرخش اطلاعات
+enum InfoState { INFO_NONE, INFO_TEMP, INFO_HUMID, INFO_SOIL, INFO_LIGHT };
+InfoState currentInfo = INFO_NONE;
+unsigned long lastInfoChange = 0;
+const int INFO_INTERVAL = 3500; // هر 3.5 ثانیه اطلاعات عوض شود
 
 // ==========================================
-// 1. توابع شبکه (Network)
+// 1. شبکه (Network)
 // ==========================================
 void fetchData() {
   if (WiFi.status() != WL_CONNECTED) return;
   HTTPClient http;
   http.begin(String(SERVER_BASE) + "/get-data");
+  http.setTimeout(1500); // کاهش تایم‌اوت برای روان‌تر شدن UI
   int code = http.GET();
-  if (code > 0) {
+  
+  if (code == 200) {
     String payload = http.getString();
-    // بافر کوچک برای جلوگیری از کرش
-    StaticJsonDocument<1500> doc;
-    deserializeJson(doc, payload);
-    
-    appData.moisture = doc["moisture"];
-    appData.temp = doc["temp"];
-    appData.humidity = doc["humidity"];
-    appData.light = doc["light"];
-    appData.mood = doc["mood"].as<String>();
-    
-    appData.tasks.clear();
-    JsonArray tArr = doc["tasks"];
-    for(JsonObject v : tArr) {
-      appData.tasks.push_back({v["name"].as<String>(), v["done"]});
+    StaticJsonDocument<4096> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+
+    if (!error) {
+      JsonObject sensor = doc["sensor"];
+      if (!sensor.isNull()) {
+        if (appData.mood != "EXCITED") {
+            appData.moisture = sensor["moisture"] | 0;
+            appData.mood     = sensor["mood"].as<String>(); 
+        } else {
+             if (sensor["moisture"].as<int>() > 90) { 
+                appData.mood = sensor["mood"].as<String>(); 
+             }
+        }
+        appData.temp     = sensor["temperature"] | 0;
+        appData.humidity = sensor["humidity"] | 0;
+        appData.light    = sensor["light"] | 0;
+      }
+      // تسک‌ها فقط اگر نیاز بود آپدیت شوند (برای جلوگیری از لگ)
+      if (currentScreen == SCREEN_TASKS) {
+          appData.tasks.clear();
+          JsonArray tArr = doc["tasks"];
+          for(JsonObject v : tArr) {
+            appData.tasks.push_back({v["_id"].as<String>(), v["title"].as<String>(), v["done"]});
+          }
+      }
     }
   }
   http.end();
@@ -119,215 +151,247 @@ void fetchData() {
 
 void toggleTaskServer(int index) {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (index < 0 || index >= appData.tasks.size()) return;
   HTTPClient http;
-  http.begin(String(SERVER_BASE) + "/toggle-task");
-  http.addHeader("Content-Type", "application/json");
-  http.POST("{\"index\": " + String(index) + "}");
+  String url = String(SERVER_BASE) + "/toggle-task/" + appData.tasks[index].id;
+  http.begin(url);
+  http.POST(""); 
   http.end();
-  fetchData(); 
 }
 
-void sendWater() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  http.begin(String(SERVER_BASE) + "/send-touch");
-  http.addHeader("Content-Type", "application/json");
-  http.POST("{\"action\": \"WATER\"}");
-  http.end();
+void localWaterEffect() {
   appData.moisture = 100;
   appData.mood = "EXCITED";
+  appData.isWatering = true;
 }
 
 // ==========================================
-// 2. توابع گرافیکی (UI Drawing)
+// 2. گرافیک (UI & EMO Face)
 // ==========================================
 
-void drawFace() {
-  sprFace.fillSprite(C_FACE_BG);
-  int cx = 70; // مرکز اسپیرایت 140 پیکسلی
-  int cy = 70 + (int)breathVal;
-  
-  // بدنه صورت
-  sprFace.fillEllipse(cx, cy + 50, 40, 6, 0xE71C); // سایه
-  sprFace.fillEllipse(cx, cy, 60, 55, 0xFFFF);
-  sprFace.drawEllipse(cx, cy, 60, 55, C_TEXT);
+// تابع کمکی برای رسم چشم ایمو
+void drawEmoEye(int x, int y, int w, int h, uint16_t color, String mood) {
+    // حالت پلک زدن
+    if (isBlinking) {
+        spr.fillRect(x, y + h/2 - 2, w, 4, color);
+        return;
+    }
 
-  // چشم‌ها
-  uint16_t ec = C_TEXT;
-  if(appData.mood == "SAD") {
-     sprFace.fillEllipse(cx-20, cy, 8, 12, ec); sprFace.fillEllipse(cx+20, cy, 8, 12, ec);
-     sprFace.drawArc(cx, cy+30, 8, 6, 180, 360, ec);
-     sprFace.fillCircle(cx-25, cy+10, 3, 0x001F);
-  } else if (appData.mood == "EXCITED") {
-     sprFace.drawString(">", cx-30, cy-5, 2); sprFace.drawString("<", cx+15, cy-5, 2);
-     sprFace.fillEllipse(cx, cy+25, 6, 8, C_ACCENT);
-  } else if (isBlinking || appData.mood == "SLEEPY") {
-     sprFace.drawArc(cx-20, cy, 12, 10, 180, 360, ec); sprFace.drawArc(cx+20, cy, 12, 10, 180, 360, ec);
+    // رسم بر اساس مود
+    if (mood == "HAPPY") {
+        // چشم‌های قوسی (لبخند معکوس)
+        spr.fillArc(x + w/2, y + h/2 + 20, w/2, w/2 - 10, 220, 320, color);
+    } 
+    else if (mood == "EXCITED") {
+        // ستاره یا لوزی
+        spr.fillTriangle(x + w/2, y, x, y + h/2, x + w, y + h/2, color); // بالا
+        spr.fillTriangle(x + w/2, y + h, x, y + h/2, x + w, y + h/2, color); // پایین
+    }
+    else if (mood == "SAD") {
+        // مستطیل پایین افتاده
+        spr.fillSmoothRoundRect(x, y + 20, w, h - 20, 15, color);
+        // اشک
+        if (x < 160) spr.fillCircle(x + 10, y + h + 10, 5, C_EMO_BLUE);
+    }
+    else if (mood == "SLEEPY") {
+        // خط‌های باریک
+        spr.fillSmoothRoundRect(x, y + h/2 - 5, w, 10, 3, color);
+        spr.drawString("Zzz...", 160, 50);
+    }
+    else {
+        // حالت عادی (NEUTRAL) - مستطیل گرد بزرگ
+        spr.fillSmoothRoundRect(x, y, w, h, 20, color);
+    }
+}
+
+void drawMainScreen() {
+  // 1. پاک کردن صفحه
+  spr.fillSprite(C_BLACK);
+
+  // 2. مدیریت انیمیشن پلک زدن
+  if (!isBlinking && millis() - lastBlink > 3500 + random(2000)) { 
+      isBlinking = true; lastBlink = millis(); 
+  }
+  if (isBlinking && millis() - lastBlink > 150) { 
+      isBlinking = false; lastBlink = millis(); 
+  }
+
+  // 3. تعیین رنگ و شکل بر اساس مود
+  uint16_t eyeColor = C_EMO_BLUE;
+  if (appData.mood == "HAPPY") eyeColor = C_EMO_GREEN;
+  if (appData.mood == "SAD") eyeColor = C_EMO_PURPLE;
+  if (appData.mood == "EXCITED") eyeColor = C_EMO_RED;
+  if (appData.mood == "SLEEPY") eyeColor = C_WHITE;
+
+  // مختصات چشم‌ها
+  int eyeW = 90;
+  int eyeH = 120;
+  int eyeY = 100;
+  
+  // لرزش خفیف اگر تشنه است
+  if (appData.mood == "SAD" || appData.moisture < 20) {
+      eyeY += random(-2, 3);
+  }
+
+  // رسم چشم چپ و راست
+  drawEmoEye(40, eyeY, eyeW, eyeH, eyeColor, appData.mood);   // Left
+  drawEmoEye(190, eyeY, eyeW, eyeH, eyeColor, appData.mood);  // Right
+
+  // 4. مدیریت چرخش اطلاعات (Cyclic Info)
+  if (millis() - lastInfoChange > INFO_INTERVAL) {
+      currentInfo = (InfoState)((currentInfo + 1) % 5); // چرخش بین 0 تا 4
+      lastInfoChange = millis();
+  }
+
+  // رسم اطلاعات در پایین صفحه
+  spr.setTextDatum(MC_DATUM); // مرکز
+  int infoY = 320;
+  
+  // کادر محو زیر اطلاعات
+  if (currentInfo != INFO_NONE) {
+      spr.fillSmoothRoundRect(60, infoY - 25, 200, 50, 10, 0x18E3); // خاکستری تیره
+  }
+
+  spr.setFont(&fonts::FreeSansBold12pt7b);
+  spr.setTextColor(C_WHITE);
+
+  switch (currentInfo) {
+      case INFO_TEMP:
+          spr.setTextColor(0xFFE0); // زرد
+          spr.drawString("TEMP: " + String(appData.temp, 1) + " C", 160, infoY);
+          break;
+      case INFO_HUMID:
+          spr.setTextColor(0x07FF); // آبی
+          spr.drawString("HUMID: " + String(appData.humidity) + " %", 160, infoY);
+          break;
+      case INFO_SOIL:
+          spr.setTextColor(0x07E0); // سبز
+          spr.drawString("SOIL: " + String((int)appData.moisture) + " %", 160, infoY);
+          break;
+      case INFO_LIGHT:
+          spr.setTextColor(0xF800); // قرمز/نارنجی
+          spr.drawString("LIGHT: " + String(appData.light) + " %", 160, infoY);
+          break;
+      case INFO_NONE:
+          // نمایش Mood یا پیام خالی
+          spr.setFont(&fonts::FreeSans9pt7b);
+          spr.setTextColor(0x9CD3);
+          spr.drawString(appData.mood, 160, infoY);
+          break;
+  }
+
+  // راهنما پایین
+  spr.setFont(&fonts::FreeSans9pt7b);
+  spr.setTextColor(0x52AA); // خاکستری
+  spr.drawString("v  TASKS  v", 160, 460);
+  
+  // دکمه مخفی آب دادن (اگر مود Excited نیست)
+  if (appData.mood != "EXCITED") {
+     spr.drawRect(140, 400, 40, 40, C_BLACK); // ناحیه لمسی مخفی
   } else {
-     sprFace.fillEllipse(cx-20, cy, 8, 12, ec); sprFace.fillEllipse(cx+20, cy, 8, 12, ec);
-     sprFace.fillCircle(cx-22, cy-3, 2, 0xFFFF); sprFace.fillCircle(cx+18, cy-3, 2, 0xFFFF);
-     sprFace.drawArc(cx, cy+20, 8, 6, 0, 180, ec);
+     spr.setTextColor(C_EMO_GREEN);
+     spr.drawString("YUMMY!", 160, 380);
   }
-  
-  // انیمیشن تنفس
-  breathVal = sin(millis()/500.0)*2.0;
-  if (!isBlinking && millis()-lastBlink > 3000) { isBlinking=true; lastBlink=millis(); }
-  if (isBlinking && millis()-lastBlink > 150) { isBlinking=false; lastBlink=millis(); }
 
-  // رسم در سمت چپ صفحه
-  sprFace.pushSprite(20, 100);
-}
-
-void drawPlantData() {
-  int bx = 180; // شروع پنل دیتا
-  
-  // رسم 4 کارت (مستقیم روی صفحه)
-  struct CardInfo { int x; int y; String t; String v; uint16_t c; };
-  CardInfo cards[] = {
-    {bx+10, 50, "Soil", String((int)appData.moisture)+"%", 0x4D19},
-    {bx+150, 50, "Temp", String(appData.temp,1), 0xFC00},
-    {bx+10, 125, "Light", String(appData.light)+"%", 0xFE60},
-    {bx+150, 125, "Air", String(appData.humidity)+"%", 0x867F}
-  };
-  
-  for(auto& c : cards) {
-    tft.fillSmoothRoundRect(c.x, c.y, 130, 65, 10, C_CARD);
-    tft.fillSmoothCircle(c.x+20, c.y+32, 14, c.c);
-    tft.setTextColor(0x9CD3); tft.setFont(&fonts::FreeSans9pt7b);
-    tft.drawString(c.t, c.x+45, c.y+10);
-    tft.setTextColor(C_TEXT); tft.setFont(&fonts::FreeSansBold12pt7b);
-    tft.drawString(c.v, c.x+45, c.y+30);
-  }
-  
-  // دکمه آب
-  tft.fillSmoothRoundRect(bx+10, 250, 270, 50, 15, C_TEXT);
-  tft.setTextColor(0xFFFF); tft.setTextDatum(MC_DATUM);
-  tft.drawString("WATER ME!", bx+145, 275);
-  
-  // متن راهنما برای Swipe
-  tft.setTextColor(0x9CD3); tft.setFont(&fonts::FreeSans9pt7b);
-  tft.setTextDatum(BC_DATUM);
-  tft.drawString("^ Swipe UP for Tasks ^", 240, 315);
-  tft.setTextDatum(TL_DATUM);
+  // پوش کردن اسپریت به نمایشگر
+  spr.pushSprite(0, 0);
 }
 
 void drawTaskScreen() {
-  tft.setTextColor(C_TEXT);
-  tft.setFont(&fonts::FreeSansBold12pt7b);
-  tft.drawString("My Tasks", 20, 20);
+  spr.fillSprite(C_BG_TASKS);
   
-  tft.setFont(&fonts::FreeSans9pt7b);
-  tft.drawString("v Swipe DOWN to Back v", 20, 50);
+  spr.setTextColor(C_WHITE, C_BG_TASKS);
+  spr.setTextDatum(TC_DATUM);
+  spr.setFont(&fonts::FreeSansBold12pt7b);
+  spr.drawString("MY TASKS", 160, 20);
+  
+  spr.setFont(&fonts::FreeSans9pt7b);
+  spr.setTextColor(C_EMO_BLUE, C_BG_TASKS);
+  spr.drawString("^ Swipe UP to Face ^", 160, 50);
   
   int y = 80;
+  spr.setTextDatum(TL_DATUM);
+  
   for (int i = 0; i < appData.tasks.size(); i++) {
-    tft.fillSmoothRoundRect(20, y, 440, 50, 10, C_CARD);
+    if (y > 450) break;
+
+    uint16_t cardColor = 0x3186; // خاکستری روشن‌تر
+    spr.fillSmoothRoundRect(20, y, 280, 50, 10, cardColor); 
+    
     if (appData.tasks[i].done) {
-      tft.fillSmoothRoundRect(30, y+10, 30, 30, 5, C_CHECK);
-      tft.setTextColor(C_CARD); tft.drawString("v", 38, y+15);
+      spr.fillSmoothCircle(45, y+25, 12, C_EMO_GREEN);
+      spr.setTextColor(C_BLACK, C_EMO_GREEN); 
+      spr.drawString("v", 40, y+17);
     } else {
-      tft.drawRoundRect(30, y+10, 30, 30, 5, C_TEXT);
+      spr.drawCircle(45, y+25, 12, C_WHITE);
     }
-    tft.setTextColor(C_TEXT); tft.setFont(&fonts::FreeSans12pt7b);
-    tft.drawString(appData.tasks[i].name, 75, y+15);
+    
+    spr.setTextColor(C_WHITE, cardColor); 
+    spr.setFont(&fonts::FreeSans12pt7b);
+    spr.drawString(appData.tasks[i].name, 75, y+15);
     y += 60;
   }
-}
-
-// انیمیشن پرده‌ای برای تغییر صفحه
-void animateSwitch(ScreenMode target) {
-  uint16_t targetColor = (target == SCREEN_TASKS) ? C_BG_TASK : C_BG_PLANT;
-  int step = 60; 
-  
-  // افکت Wipe
-  if (target == SCREEN_TASKS) {
-    for (int y = 320; y >= 0; y -= step) {
-      tft.fillRect(0, y, 480, step, targetColor);
-      delay(10);
-    }
-  } else {
-    for (int y = 0; y < 320; y += step) {
-      tft.fillRect(0, y, 480, step, targetColor);
-      delay(10);
-    }
-  }
-  
-  tft.fillScreen(targetColor);
-  
-  // رسم محتوای صفحه جدید
-  if (target == SCREEN_TASKS) {
-    drawTaskScreen();
-  } else {
-    tft.setTextColor(C_TEXT); tft.setFont(&fonts::FreeSansBold12pt7b);
-    tft.drawString("Plant Status", 190, 10);
-    drawPlantData(); 
-  }
-  currentScreen = target;
+  spr.pushSprite(0, 0);
 }
 
 // ==========================================
-// 3. ورودی و کنترل (Input Logic)
+// 3. ورودی (Touch)
 // ==========================================
 int16_t startY = -1;
+unsigned long lastClick = 0;
 
-void checkSwipeAndTouch() {
+void checkInput() {
   int32_t x, y;
   bool touched = tft.getTouch(&x, &y);
   
   if (touched) {
-    if (startY == -1) startY = y; // شروع لمس
+    if (startY == -1) startY = y; 
   } else {
-    // انگشت برداشته شد
-    if (startY != -1) {
-       // اینجا میتونیم کلیک رو تشخیص بدیم ولی بهتره در لحظه تاچ تشخیص بدیم
-    }
-    startY = -1; // ریست
+    startY = -1;
   }
   
-  // اگر انگشت روی صفحه است
   if (touched && startY != -1) {
-    int dist = startY - y; // مثبت = حرکت به بالا
+    int dist = startY - y; 
     
-    // تشخیص Swipe
-    if (dist > 50 && currentScreen == SCREEN_PLANT) {
-      animateSwitch(SCREEN_TASKS);
-      startY = -1; // ریست تا وقتی دست برداشته شه
-      return;
-    }
-    if (dist < -50 && currentScreen == SCREEN_TASKS) {
-      animateSwitch(SCREEN_PLANT);
-      startY = -1;
-      return;
+    // Swipe UP (برو به بالا - برگشت به صورت)
+    if (dist > 50 && currentScreen == SCREEN_TASKS) {
+      currentScreen = SCREEN_MAIN;
+      startY = -1; delay(150); return;
     }
     
-    // تشخیص کلیک (اگر حرکت کم بود)
-    if (abs(dist) < 10) {
-       // برای جلوگیری از کلیک رگباری، یک فلگ ساده
-       static unsigned long lastClick = 0;
-       if (millis() - lastClick > 300) {
-          // کلیک در صفحه گیاه
-          if (currentScreen == SCREEN_PLANT) {
-              if (x > 190 && y > 250 && y < 310) {
-                  sendWater();
-                  tft.fillSmoothRoundRect(190, 250, 270, 50, 15, C_ACCENT);
-                  delay(150);
-                  drawPlantData();
-                  lastClick = millis();
-              }
+    // Swipe DOWN (برو به پایین - لیست تسک‌ها)
+    if (dist < -50 && currentScreen == SCREEN_MAIN) {
+      currentScreen = SCREEN_TASKS;
+      startY = -1; delay(150); return;
+    }
+    
+    // Click (تپ کردن)
+    if (abs(dist) < 10 && (millis() - lastClick > 400)) {
+      
+      // در صفحه اصلی: دکمه مخفی یا تعامل با صورت
+      if (currentScreen == SCREEN_MAIN) {
+          // اگر وسط پایین صفحه کلیک شد (آب دادن دستی)
+          if (y > 350 && x > 100 && x < 220) {
+              localWaterEffect();
+              lastClick = millis();
           }
-          // کلیک در صفحه تسک‌ها
-          else if (currentScreen == SCREEN_TASKS) {
-              int idx = (y - 80) / 60;
-              if (idx >= 0 && idx < appData.tasks.size()) {
-                  // تیک زدن گرافیکی فوری
-                  appData.tasks[idx].done = !appData.tasks[idx].done;
-                  drawTaskScreen();
-                  // ارسال به سرور
-                  toggleTaskServer(idx);
-                  lastClick = millis();
-              }
+          // اگر روی چشم‌ها کلیک شد (چشمک بزند)
+          else if (y < 250) {
+              isBlinking = true;
+              lastBlink = millis() + 500; // کمی بیشتر نگه داره
           }
-       }
+      }
+      
+      // در صفحه تسک‌ها: تیک زدن
+      else if (currentScreen == SCREEN_TASKS) {
+          int idx = (y - 80) / 60;
+          if (idx >= 0 && idx < appData.tasks.size()) {
+              appData.tasks[idx].done = !appData.tasks[idx].done;
+              toggleTaskServer(idx);
+              drawTaskScreen(); // رفرش فوری
+              lastClick = millis();
+          }
+      }
     }
   }
 }
@@ -337,55 +401,55 @@ void checkSwipeAndTouch() {
 // ==========================================
 void setup() {
   Serial.begin(115200);
+  
+  // راه اندازی LCD
   tft.init();
-  tft.setRotation(1);
-  tft.fillScreen(C_BG_PLANT);
+  tft.setRotation(1); // ممکن است برای شما 1 یا 3 باشد
+  tft.fillScreen(C_BLACK);
   
-  // اسپیرایت 140x140 برای صورت (رم امن)
-  sprFace.createSprite(140, 140);
-  
-  tft.setTextColor(C_TEXT);
-  tft.drawString("Connecting...", 220, 160);
+  // ایجاد Sprite تمام صفحه برای انیمیشن روان
+  spr.setColorDepth(16);
+  spr.createSprite(320, 480); 
+
+  // اتصال وای‌فای
+  spr.drawString("CONNECTING...", 110, 220);
+  spr.pushSprite(0,0);
   
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while(WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println("\nConnected!");
+  int retry = 0;
+  while (WiFi.status() != WL_CONNECTED && retry < 10) {
+    delay(500); retry++;
+    Serial.print(".");
+  }
   
-  fetchData();
-  
-  // رسم اولیه
-  tft.fillScreen(C_BG_PLANT);
-  tft.setTextColor(C_TEXT);
-  tft.setFont(&fonts::FreeSansBold12pt7b);
-  tft.drawString("Plant Status", 190, 10);
-  drawPlantData();
+  fetchData(); // دریافت اولیه
 }
 
 unsigned long lastNetCheck = 0;
-unsigned long lastDrawCheck = 0;
 
 void loop() {
-  checkSwipeAndTouch(); // همیشه ورودی را چک کن
-  
-  // فقط اگر در صفحه اصلی هستیم صورت را انیمیت کن
-  if (currentScreen == SCREEN_PLANT) {
-    drawFace(); 
-    
-    // آپدیت دیتا هر 2 ثانیه (فقط گرافیک)
-    if (millis() - lastDrawCheck > 2000) {
-      drawPlantData();
-      lastDrawCheck = millis();
-    }
-  }
-  
-  // سینک با سرور هر 2 ثانیه
-  if (millis() - lastNetCheck > 2000) {
+  checkInput();
+
+  // آپدیت شبکه هر 5 ثانیه (بدون بلاک کردن انیمیشن)
+  if (millis() - lastNetCheck > 5000) {
     fetchData();
-    // اگر در صفحه تسک هستیم و دیتا عوض شد، رفرش کن
-    if (currentScreen == SCREEN_TASKS) {
-       // اینجا میتونیم رفرش کنیم اگر لازم بود
-       // drawTaskScreen(); 
-    }
     lastNetCheck = millis();
   }
+
+  // مدیریت تایمر آب خوردن
+  if (appData.isWatering && millis() % 200 == 0) {
+     // افکت لرزش رنگ هنگام آب خوردن
+  }
+
+  // رسم صفحه فعال
+  if (currentScreen == SCREEN_MAIN) {
+    drawMainScreen();
+  } 
+  else if (currentScreen == SCREEN_TASKS) {
+    // تسک‌ها استاتیک هستند مگر اینکه تاچ شوند، اما برای سادگی در لوپ می‌گذاریم
+    // برای پرفورمنس بهتر می‌توان شرط گذاشت
+    drawTaskScreen();
+  }
+  
+  delay(10); // تاخیر کوچک برای ثبات
 }
