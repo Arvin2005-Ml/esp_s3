@@ -1,24 +1,43 @@
-<div class="card">
-    <div class="card-header">
-      <span>🌿 Plant Health</span>
-      <span>Live</span>
+<section class="card card--wide">
+  <h3 class="card__title">📡 وضعیت سنسورها <small>Realtime</small></h3>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat__label">دمــا</div>
+      <div class="stat__value" id="temperature">-- °C</div>
     </div>
-    <div class="stats-grid">
-      <div class="stat-box temp">
-        <span class="stat-label">Temperature</span>
-        <span class="stat-value"><span id="temp">--</span>°C</span>
-      </div>
-      <div class="stat-box hum">
-        <span class="stat-label">Humidity</span>
-        <span class="stat-value"><span id="hum">--</span>%</span>
-      </div>
-      <div class="stat-box soil">
-        <span class="stat-label">Moisture</span>
-        <span class="stat-value"><span id="moist">--</span>%</span>
-      </div>
-      <div class="stat-box mood">
-        <span class="stat-label">Mood</span>
-        <span class="stat-value" id="mood">--</span>
-      </div>
+    <div class="stat">
+      <div class="stat__label">رطوبت</div>
+      <div class="stat__value" id="humidity">-- %</div>
     </div>
+    <div class="stat">
+      <div class="stat__label">رطوبت خاک</div>
+      <div class="stat__value" id="moisture">-- %</div>
+    </div>
+    <div class="stat">
+      <div class="stat__label">نور</div>
+      <div class="stat__value" id="light">--</div>
+    </div>
+    <div class="stat">
+      <div class="stat__label">گاز (MQ135)</div>
+      <div class="stat__value" id="gas">--</div>
+    </div>
+    <div class="stat">
+      <div class="stat__label">سطح آب</div>
+      <div class="stat__value" id="water_level">--</div>
+    </div>
+    <div class="stat">
+      <div class="stat__label">تاچ</div>
+      <div class="stat__value" id="touch">--</div>
+    </div>
+    <div class="stat">
+      <div class="stat__label">پمپ</div>
+      <div class="stat__value" id="pump_state">--</div>
+    </div>
+  </div>
+</section>
+<div class="pump-control">
+  <div class="label">وضعیت پمپ:</div>
+  <div id="pumpState" class="value">...</div>
+  <button id="pumpToggle" class="btn-pump">تغییر وضعیت</button>
 </div>

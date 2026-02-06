@@ -1,11 +1,13 @@
 from datetime import datetime
 
 def serialize(doc):
-    if not doc: return None
-    doc["_id"] = str(doc["_id"])
-    if "timestamp" in doc and isinstance(doc["timestamp"], datetime):
-        doc["timestamp"] = doc["timestamp"].isoformat()
+    if not doc:
+        return {}
+
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
     return doc
+
 
 def calculate_mood(moisture: float):
     if moisture > 80: return "EXCITED"

@@ -1,4 +1,222 @@
-<header>
-  <h1>🌱 Kawaii Monitor</h1>
-  <div class="subtitle">Smart Plant Care System</div>
-</header>
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Plant Dashboard</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700;800&display=swap" rel="stylesheet"/>
+
+  <style>
+    :root{
+      --bg:#0b0f1a;
+      --card:#121826;
+      --card-2:#0f1422;
+      --txt:#e6eaf2;
+      --muted:#9aa4b2;
+      --accent:#8b5cf6;
+      --accent-2:#22d3ee;
+      --success:#22c55e;
+      --warning:#f59e0b;
+      --danger:#ef4444;
+      --border:rgba(255,255,255,0.08);
+      --glass:rgba(255,255,255,0.05);
+      --shadow:0 20px 60px rgba(0,0,0,0.35);
+      --radius:18px;
+    }
+
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:"Vazirmatn",sans-serif;
+      background: radial-gradient(1200px 600px at 10% 0%, rgba(139,92,246,0.25), transparent 60%),
+                  radial-gradient(1200px 600px at 90% 10%, rgba(34,211,238,0.25), transparent 60%),
+                  var(--bg);
+      color:var(--txt);
+      min-height:100vh;
+    }
+
+    .page{
+      max-width:1200px;
+      margin:0 auto;
+      padding:32px 20px 60px;
+    }
+
+    .topbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      background:linear-gradient(145deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+      border:1px solid var(--border);
+      padding:16px 22px;
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand{
+      display:flex;
+      gap:12px;
+      align-items:center;
+    }
+    .brand__logo{
+      width:42px;height:42px;
+      background:linear-gradient(135deg, var(--accent), var(--accent-2));
+      border-radius:12px;
+      box-shadow:0 10px 30px rgba(139,92,246,0.35);
+    }
+    .brand__title{
+      font-weight:800;
+      font-size:20px;
+      letter-spacing:0.2px;
+    }
+    .brand__subtitle{
+      font-size:12px;color:var(--muted);
+    }
+
+    .hero{
+      margin-top:22px;
+      padding:24px;
+      border-radius:var(--radius);
+      background:linear-gradient(135deg, rgba(139,92,246,0.15), rgba(34,211,238,0.1));
+      border:1px solid var(--border);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      box-shadow:var(--shadow);
+    }
+    .hero h1{margin:0 0 6px;font-size:28px;}
+    .hero p{margin:0;color:var(--muted);}
+    .hero__badge{
+      padding:10px 14px;
+      border-radius:999px;
+      font-size:12px;
+      background:rgba(255,255,255,0.08);
+      border:1px solid var(--border);
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap:18px;
+      margin-top:20px;
+    }
+
+    .card{
+      grid-column: span 4;
+      background:linear-gradient(145deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      padding:18px;
+      backdrop-filter: blur(8px);
+      transition:transform .2s ease, box-shadow .2s ease;
+    }
+    .card:hover{
+      transform:translateY(-4px);
+      box-shadow:0 30px 70px rgba(0,0,0,0.45);
+    }
+
+    .card--wide{grid-column: span 8;}
+    .card__title{
+      margin:0 0 12px;
+      font-size:16px;
+      font-weight:700;
+      color:#fff;
+      display:flex;
+      align-items:center;
+      gap:8px;
+    }
+    .card__title small{color:var(--muted);font-weight:400}
+
+    .stats{
+      display:grid;
+      grid-template-columns:repeat(2,1fr);
+      gap:12px;
+    }
+    .stat{
+      background:var(--glass);
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:12px;
+    }
+    .stat__label{font-size:12px;color:var(--muted)}
+    .stat__value{font-size:20px;font-weight:700;margin-top:4px}
+
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:12px;
+      background:rgba(255,255,255,0.06);
+      border:1px solid var(--border);
+    }
+
+    .tasks{
+      display:flex;flex-direction:column;gap:12px;
+    }
+    .task-input{
+      display:flex;gap:8px;
+    }
+    .task-input input{
+      flex:1;
+      background:var(--card-2);
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px 12px;
+      color:var(--txt);
+      outline:none;
+    }
+    .btn{
+      background:linear-gradient(135deg, var(--accent), var(--accent-2));
+      color:#fff;border:none;
+      border-radius:12px;
+      padding:10px 14px;
+      cursor:pointer;font-weight:600;
+      box-shadow:0 10px 30px rgba(139,92,246,0.35);
+    }
+
+    .task-item{
+      display:flex;align-items:center;justify-content:space-between;
+      background:var(--glass);
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px 12px;
+    }
+    .task-item.done{opacity:.6;text-decoration:line-through}
+
+    .chart-wrap{
+      position:relative;
+      height:280px;
+      background:var(--glass);
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:10px;
+    }
+
+    .badge-good{color:var(--success)}
+    .badge-warn{color:var(--warning)}
+    .badge-danger{color:var(--danger)}
+
+    @media (max-width: 900px){
+      .card{grid-column: span 12;}
+      .card--wide{grid-column: span 12;}
+      .hero{flex-direction:column;align-items:flex-start;}
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__logo"></div>
+        <div>
+          <div class="brand__title">Plant Control Center</div>
+          <div class="brand__subtitle">پنل هوشمند پایش و مدیریت</div>
+        </div>
+      </div>
+      <div class="pill">وضعیت: آنلاین</div>
+    </header>

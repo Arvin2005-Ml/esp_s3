@@ -1,107 +1,96 @@
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="/static/app.js"></script>
 <script>
-const API = location.origin;
-let plantChart; 
+  async function loadData() {
+    try {
+      const res = await fetch("/get-data");
+      const data = await res.json();
+      const s = data.sensor;
 
-function initChart() {
-  const ctx = document.getElementById('plantChart').getContext('2d');
-  plantChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: [],
-      datasets: [{
-        label: 'Soil Moisture (%)',
-        data: [],
-        borderColor: '#B5EAD7',
-        backgroundColor: 'rgba(181, 234, 215, 0.4)',
-        tension: 0.4,
-        fill: true,
-        pointRadius: 4
-      }, {
-        label: 'Temperature (°C)',
-        data: [],
-        borderColor: '#FFB7B2',
-        backgroundColor: 'transparent',
-        borderDash: [5, 5],
-        tension: 0.4
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { position: 'top' } },
-      scales: { y: { beginAtZero: true } }
+      document.getElementById("temperature").textContent = s.temperature;
+      document.getElementById("humidity").textContent = s.humidity;
+      document.getElementById("moisture").textContent = s.moisture;
+      document.getElementById("light").textContent = s.light;
+      document.getElementById("gas").textContent = s.gas;
+      document.getElementById("water_level").textContent = s.water_level;
+      document.getElementById("touch").textContent = s.touch;
+      document.getElementById("pump_state").textContent = s.pump_state;
+      document.getElementById("mood").textContent = s.mood;
+
+      const pumpStatus = document.getElementById("pump_status");
+      if (s.pump_state) {
+        pumpStatus.textContent = "روشن";
+        pumpStatus.className = "status ok";
+      } else {
+        pumpStatus.textContent = "خاموش";
+        pumpStatus.className = "status bad";
+      }
+
+      const tasksList = document.getElementById("tasks_list");
+      tasksList.innerHTML = "";
+      data.tasks.forEach(t => {
+        const li = document.createElement("li");
+        li.textContent = t.title;
+        if (t.done) li.classList.add("done");
+        tasksList.appendChild(li);
+      });
+
+      document.getElementById("last_update").textContent = new Date().toLocaleString("fa-IR");
+    } catch (e) {
+      console.error("Fetch error:", e);
     }
-  });
-}
+  }
 
-async function loadData() {
-  const res = await fetch(`${API}/get-data`);
+  async function loadHistory() {
+    try {
+      const res = await fetch("/get-history");
+      const hist = await res.json();
+      const area = document.getElementById("chart_area");
+      area.textContent = "داده دریافت شد: " + hist.length + " رکورد";
+    } catch (e) {
+      console.error("History error:", e);
+    }
+  }
+
+  loadData();
+  loadHistory();
+  setInterval(loadData, 5000);
+
+async function refreshData() {
+  const res = await fetch("/get-data");
   const data = await res.json();
 
-  document.getElementById("temp").innerText = data.sensor.temperature;
-  document.getElementById("hum").innerText = data.sensor.humidity;
-  document.getElementById("moist").innerText = data.sensor.moisture;
-  
-  const moodMap = {
-    "HAPPY": "😊 Happy",
-    "SAD": "😢 Thirsty",
-    "SLEEPY": "😴 Sleepy",
-    "EXCITED": "🤩 Excited"
-  };
-  document.getElementById("mood").innerText = moodMap[data.sensor.mood] || data.sensor.mood;
+  // سنسورها (اگر قبلا داری، همین‌ها را نگه دار)
+  if (data.latest) {
+    // اینجا کد قبلی خودت برای سنسورها بماند
+  }
 
-  const taskBox = document.getElementById("tasks");
-  taskBox.innerHTML = "";
-  data.tasks.forEach(t => {
-    const div = document.createElement("div");
-    div.className = "task-item" + (t.done ? " done" : "");
-    div.innerHTML = `
-      <span>${t.title}</span>
-      <button class="check-btn" onclick="toggleTask('${t._id}')">✓</button>
-    `;
-    taskBox.appendChild(div);
-  });
+  // وضعیت پمپ
+  const pumpState = data.pump_state === true;
+  const stateEl = document.getElementById("pumpState");
+  const btn = document.getElementById("pumpToggle");
+  if (stateEl) stateEl.textContent = pumpState ? "روشن" : "خاموش";
+  if (btn) btn.textContent = pumpState ? "خاموش کردن" : "روشن کردن";
 }
 
-async function updateChart() {
-  const res = await fetch(`${API}/get-history`);
-  const history = await res.json();
+async function togglePump() {
+  const stateEl = document.getElementById("pumpState");
+  const turnOn = stateEl && stateEl.textContent !== "روشن";
 
-  if (!plantChart) return;
-
-  const labels = history.map(d => {
-    const date = new Date(d.timestamp);
-    return `${date.getHours()}:${date.getMinutes()}`;
-  });
-  const moistData = history.map(d => d.moisture);
-  const tempData = history.map(d => d.temperature);
-
-  plantChart.data.labels = labels;
-  plantChart.data.datasets[0].data = moistData;
-  plantChart.data.datasets[1].data = tempData;
-  plantChart.update();
-}
-
-async function addTask() {
-  const title = document.getElementById("taskInput").value;
-  if (!title) return;
-  await fetch(`${API}/add-task`, {
+  await fetch("/set-pump", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({title})
+    body: JSON.stringify({ pump_state: turnOn })
   });
-  document.getElementById("taskInput").value = "";
-  loadData();
+
+  refreshData();
 }
 
-async function toggleTask(id) {
-  await fetch(`${API}/toggle-task/${id}`, {method: "POST"});
-  loadData();
-}
+setInterval(refreshData, 5000);
+refreshData();
 
-initChart();
-loadData();
-updateChart();
-setInterval(loadData, 3000); 
-setInterval(updateChart, 10000); 
+const btn = document.getElementById("pumpToggle");
+if (btn) btn.addEventListener("click", togglePump);
 </script>
+</body>
+</html>
