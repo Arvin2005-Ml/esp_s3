@@ -1,13 +1,12 @@
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Request
+from fastapi.templating import Jinja2Templates
 
 router = APIRouter()
 
-@router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    # فرض بر این است که فایل dashboard.html در پوشه ریشه پروژه کنار run.py است
-    try:
-        with open("dashboard.html", "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "<h1>Dashboard file not found</h1>"
+# تنظیم پوشه تمپلیت روی دایرکتوری جاری (.) تا بتواند dashboard.html را از ریشه بخواند
+templates = Jinja2Templates(directory=".")
+
+@router.get("/dashboard")
+async def dashboard(request: Request):
+    # به جای open().read() از موتور تمپلیت استفاده می‌کنیم
+    return templates.TemplateResponse("dashboard.html", {"request": request})
