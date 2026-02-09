@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from datetime import datetime
 from app.database import sensor_collection, task_collection,control_collection
-from app.models import SensorData, PumpCommand
+from app.models import SensorData, PumpCommand, MoodEvent
 from app.utils import calculate_mood, serialize
 
 router = APIRouter()
@@ -26,10 +26,11 @@ async def update_data(data: SensorData):
     await sensor_collection.insert_one(doc)
     return {"status": "ok", "mood": mood}
 
+from datetime import datetime, timezone
+
 @router.get("/get-data")
 async def get_data():
     latest = await sensor_collection.find_one(sort=[("timestamp", -1)])
-
     if not latest:
         latest = {
             "temperature": 0,
@@ -40,14 +41,18 @@ async def get_data():
             "water_level": 0,
             "touch": 0,
             "pump_state": 0,
-            "mood": "SAD"
+            "mood": "SAD",
+            "timestamp": datetime.utcnow()
         }
 
     tasks = await task_collection.find().to_list(100)
+    pump = await control_collection.find_one({"_id": "pump"}) or {"pump_state": False}
 
     return {
         "sensor": serialize(latest),
-        "tasks": [serialize(t) for t in tasks]
+        "tasks": [serialize(t) for t in tasks],
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "pump_state": pump.get("pump_state", False)
     }
 
 @router.get("/get-history")
@@ -69,3 +74,12 @@ async def set_pump(cmd: PumpCommand):
 async def get_pump():
     ctrl = await control_collection.find_one({"_id": "pump"}) or {"pump_state": False}
     return {"pump_state": ctrl.get("pump_state", False)}
+
+@router.post("/log-mood")
+async def log_mood(event: MoodEvent):
+    doc = {
+        "mood": event.mood,
+        "timestamp": datetime.utcnow()
+    }
+    await mood_collection.insert_one(doc)
+    return {"status": "logged"}

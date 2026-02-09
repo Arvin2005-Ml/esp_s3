@@ -16,3 +16,7 @@ class TaskCreate(BaseModel):
 
 class PumpCommand(BaseModel):
     pump_state: bool
+
+class MoodEvent(BaseModel):
+    mood: str
+
