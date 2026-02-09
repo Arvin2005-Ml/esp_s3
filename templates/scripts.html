@@ -1,96 +1,130 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="/static/app.js"></script>
 <script>
-  async function loadData() {
+  // تابع اصلی برای به‌روزرسانی تمام بخش‌های دشبورد
+  async function updateDashboard() {
     try {
       const res = await fetch("/get-data");
       const data = await res.json();
-      const s = data.sensor;
 
-      document.getElementById("temperature").textContent = s.temperature;
-      document.getElementById("humidity").textContent = s.humidity;
-      document.getElementById("moisture").textContent = s.moisture;
-      document.getElementById("light").textContent = s.light;
-      document.getElementById("gas").textContent = s.gas;
-      document.getElementById("water_level").textContent = s.water_level;
-      document.getElementById("touch").textContent = s.touch;
-      document.getElementById("pump_state").textContent = s.pump_state;
-      document.getElementById("mood").textContent = s.mood;
+      // ۱. به‌روزرسانی مقادیر سنسورها (مستقیم از دیتا خوانده می‌شود)
+      // اگر آی‌دی‌ها در HTML شما متفاوت است، آن‌ها را چک کنید
+      if (document.getElementById("temperature")) 
+          document.getElementById("temperature").textContent = data.temperature || 0;
+      
+      if (document.getElementById("humidity")) 
+          document.getElementById("humidity").textContent = data.humidity || 0;
+      
+      if (document.getElementById("moisture")) 
+          document.getElementById("moisture").textContent = data.moisture || 0;
+      
+      if (document.getElementById("light")) 
+          document.getElementById("light").textContent = data.light || 0;
+      
+      if (document.getElementById("gas")) 
+          document.getElementById("gas").textContent = data.gas || 0;
+      
+      if (document.getElementById("water_level")) 
+          document.getElementById("water_level").textContent = data.water_level || 0;
+      
+      if (document.getElementById("touch")) 
+          document.getElementById("touch").textContent = data.touch || 0;
+      
+      if (document.getElementById("mood")) 
+          document.getElementById("mood").textContent = data.mood || "Unknown";
 
+      // ۲. به‌روزرسانی وضعیت پمپ
       const pumpStatus = document.getElementById("pump_status");
-      if (s.pump_state) {
-        pumpStatus.textContent = "روشن";
-        pumpStatus.className = "status ok";
-      } else {
-        pumpStatus.textContent = "خاموش";
-        pumpStatus.className = "status bad";
+      const pumpStateText = document.getElementById("pumpState"); // برای بخش کنترل پمپ
+      const pumpBtn = document.getElementById("pumpToggle");
+
+      const isPumpOn = data.pump_state === true || data.pump_state === 1;
+
+      if (pumpStatus) {
+        pumpStatus.textContent = isPumpOn ? "روشن" : "خاموش";
+        pumpStatus.className = isPumpOn ? "status ok" : "status bad";
       }
 
-      const tasksList = document.getElementById("tasks_list");
-      tasksList.innerHTML = "";
-      data.tasks.forEach(t => {
-        const li = document.createElement("li");
-        li.textContent = t.title;
-        if (t.done) li.classList.add("done");
-        tasksList.appendChild(li);
-      });
+      if (pumpStateText) {
+        pumpStateText.textContent = isPumpOn ? "روشن" : "خاموش";
+      }
 
-      document.getElementById("last_update").textContent = new Date().toLocaleString("fa-IR");
+      if (pumpBtn) {
+        pumpBtn.textContent = isPumpOn ? "خاموش کردن" : "روشن کردن";
+      }
+
+      // ۳. به‌روزرسانی لیست تسک‌ها (اگر در JSON وجود داشته باشد)
+      if (data.tasks) {
+        const tasksList = document.getElementById("tasks_list");
+        if (tasksList) {
+          tasksList.innerHTML = "";
+          data.tasks.forEach(t => {
+            const li = document.createElement("li");
+            li.textContent = t.title;
+            if (t.done) li.classList.add("done");
+            tasksList.appendChild(li);
+          });
+        }
+      }
+
+      // ۴. زمان آخرین بروزرسانی
+      if (document.getElementById("last_update")) {
+        document.getElementById("last_update").textContent = new Date().toLocaleString("fa-IR");
+      }
+
     } catch (e) {
-      console.error("Fetch error:", e);
+      console.error("Error fetching dashboard data:", e);
     }
   }
 
+  // تابع تغییر وضعیت پمپ
+  async function togglePump() {
+    const stateText = document.getElementById("pumpState");
+    // اگر متن فعلی "روشن" نیست، پس می‌خواهیم روشن کنیم
+    const shouldTurnOn = stateText && stateText.textContent !== "روشن";
+
+    try {
+      const response = await fetch("/set-pump", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ pump_state: shouldTurnOn })
+      });
+      
+      if (response.ok) {
+        // بلافاصله بعد از دستور، دیتای جدید را بگیر
+        setTimeout(updateDashboard, 500); 
+      }
+    } catch (e) {
+      console.error("Error toggling pump:", e);
+    }
+  }
+
+  // تابع تاریخچه (چارت)
   async function loadHistory() {
     try {
       const res = await fetch("/get-history");
       const hist = await res.json();
       const area = document.getElementById("chart_area");
-      area.textContent = "داده دریافت شد: " + hist.length + " رکورد";
+      if (area) {
+        area.textContent = "داده دریافت شد: " + hist.length + " رکورد";
+      }
     } catch (e) {
       console.error("History error:", e);
     }
   }
 
-  loadData();
-  loadHistory();
-  setInterval(loadData, 5000);
+  // اجرای توابع در هنگام لود صفحه
+  document.addEventListener("DOMContentLoaded", () => {
+    updateDashboard();
+    loadHistory();
+    
+    // تنظیم اینتروال برای آپدیت خودکار هر ۵ ثانیه
+    setInterval(updateDashboard, 5000);
 
-async function refreshData() {
-  const res = await fetch("/get-data");
-  const data = await res.json();
-
-  // سنسورها (اگر قبلا داری، همین‌ها را نگه دار)
-  if (data.latest) {
-    // اینجا کد قبلی خودت برای سنسورها بماند
-  }
-
-  // وضعیت پمپ
-  const pumpState = data.pump_state === true;
-  const stateEl = document.getElementById("pumpState");
-  const btn = document.getElementById("pumpToggle");
-  if (stateEl) stateEl.textContent = pumpState ? "روشن" : "خاموش";
-  if (btn) btn.textContent = pumpState ? "خاموش کردن" : "روشن کردن";
-}
-
-async function togglePump() {
-  const stateEl = document.getElementById("pumpState");
-  const turnOn = stateEl && stateEl.textContent !== "روشن";
-
-  await fetch("/set-pump", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ pump_state: turnOn })
+    // افزودن رویداد کلیک به دکمه پمپ
+    const btn = document.getElementById("pumpToggle");
+    if (btn) {
+      btn.addEventListener("click", togglePump);
+    }
   });
-
-  refreshData();
-}
-
-setInterval(refreshData, 5000);
-refreshData();
-
-const btn = document.getElementById("pumpToggle");
-if (btn) btn.addEventListener("click", togglePump);
 </script>
-</body>
-</html>

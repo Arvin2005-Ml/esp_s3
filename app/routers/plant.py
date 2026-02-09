@@ -1,59 +1,54 @@
-from fastapi import APIRouter
-from datetime import datetime
-from app.database import sensor_collection, task_collection,control_collection
-from app.models import SensorData, PumpCommand, MoodEvent
-from app.utils import calculate_mood, serialize
+from fastapi import APIRouter, Request
+from app.database import sensor_collection, task_collection, control_collection, mood_collection
+from app.models import SensorData, TaskCreate, PumpCommand
+from app.utils import serialize, calculate_mood
+from datetime import datetime, timezone
 
 router = APIRouter()
 
 @router.post("/update-data")
 async def update_data(data: SensorData):
+    # لاگ کردن برای اطمینان از دریافت داده
+    print(f"Received from ESP: {data.dict()}")
+    
     mood = calculate_mood(data.moisture)
-
-    doc = {
-        "temperature": data.temperature,
-        "humidity": data.humidity,
-        "moisture": data.moisture,
-        "light": data.light,
-        "gas": data.gas,
-        "water_level": data.water_level,
-        "touch": data.touch,
-        "pump_state": data.pump_state,
-        "mood": mood,
-        "timestamp": datetime.utcnow()
-    }
+    
+    # ساخت داکیومنت کامل برای دیتابیس
+    doc = data.dict()
+    doc["mood"] = mood
+    doc["timestamp"] = datetime.now(timezone.utc)
 
     await sensor_collection.insert_one(doc)
     return {"status": "ok", "mood": mood}
 
-from datetime import datetime, timezone
-
 @router.get("/get-data")
 async def get_data():
+    # 1. گرفتن آخرین داده ثبت شده
     latest = await sensor_collection.find_one(sort=[("timestamp", -1)])
-    if not latest:
-        latest = {
-            "temperature": 0,
-            "humidity": 0,
-            "moisture": 0,
-            "light": 0,
-            "gas": 0,
-            "water_level": 0,
-            "touch": 0,
-            "pump_state": 0,
-            "mood": "SAD",
-            "timestamp": datetime.utcnow()
-        }
+    
+    # 2. گرفتن وضعیت پمپ
+    pump_doc = await control_collection.find_one({"_id": "pump"})
+    current_pump_state = pump_doc.get("pump_state", False) if pump_doc else False
 
-    tasks = await task_collection.find().to_list(100)
-    pump = await control_collection.find_one({"_id": "pump"}) or {"pump_state": False}
-
-    return {
-        "sensor": serialize(latest),
-        "tasks": [serialize(t) for t in tasks],
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        "pump_state": pump.get("pump_state", False)
+    # 3. داده‌های پیش‌فرض اگر دیتابیس خالی بود
+    data = {
+        "temperature": 0, "humidity": 0, "moisture": 0, "light": 0,
+        "gas": 0, "water_level": 0, "touch": 0, "mood": "Unknown"
     }
+
+    # 4. اگر داده جدید در دیتابیس بود، جایگزین کن
+    if latest:
+        serialized_latest = serialize(latest)
+        data.update(serialized_latest) # این خط کلیدهای سنسور را به data اضافه می‌کند
+
+    # 5. اضافه کردن اطلاعات سیستمی و پمپ
+    data["pump_state"] = current_pump_state
+    data["server_time"] = datetime.now(timezone.utc).isoformat()
+    
+    # نکته مهم: اگر تسک‌ها را هم نیاز دارید، این خط را فعال کنید، اما فعلا برای سادگی حذف کردم
+    # data["tasks"] = ... 
+
+    return data
 
 @router.get("/get-history")
 async def get_history():
@@ -74,12 +69,3 @@ async def set_pump(cmd: PumpCommand):
 async def get_pump():
     ctrl = await control_collection.find_one({"_id": "pump"}) or {"pump_state": False}
     return {"pump_state": ctrl.get("pump_state", False)}
-
-@router.post("/log-mood")
-async def log_mood(event: MoodEvent):
-    doc = {
-        "mood": event.mood,
-        "timestamp": datetime.utcnow()
-    }
-    await mood_collection.insert_one(doc)
-    return {"status": "logged"}

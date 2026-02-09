@@ -1,18 +1,18 @@
-// esp_sensor.ino
 #include <WiFi.h>
 #include <HTTPClient.h>
 
-// --- تنظیمات ---
+// -------- WiFi Config --------
 const char* WIFI_SSID = "arvinshokouhi";
 const char* WIFI_PASS = "Arvin1384";
 
-// ✅ آدرس کامل با http://
-const char* SERVER_URL = "http://10.146.144.197:8000/update-data";
+// -------- Server Config --------
+const char* SERVER_URL = "http://10.187.156.197:8000/update-data";
 
 // ارسال هر 15 ثانیه
 constexpr unsigned long POST_INTERVAL_MS = 15000;
 unsigned long lastPost = 0;
 
+// -------- WiFi Connection --------
 void connectToWiFi() {
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -24,56 +24,112 @@ void connectToWiFi() {
         Serial.print(".");
         retry++;
         if (retry > 30) {
-            Serial.println("\nWiFi connection failed. Restarting...");
+            Serial.println("\nWiFi failed. Restarting ESP...");
             ESP.restart();
         }
     }
-    Serial.print("\nConnected! IP address: ");
+    Serial.print("\nConnected! IP: ");
     Serial.println(WiFi.localIP());
 }
 
+// -------- Fake Sensor Readings --------
 float readSoilMoisture() {
-    return 30.0f + static_cast<float>(random(0, 5000)) / 100.0f;
+    return 20.0f + random(0, 6000) / 100.0f; // %
 }
 
 float readTemperature() {
-    return 20.0f + static_cast<float>(random(0, 800)) / 10.0f;
+    return 18.0f + random(0, 1500) / 100.0f; // °C
 }
 
 float readHumidity() {
-    return 40.0f + static_cast<float>(random(0, 3000)) / 100.0f;
+    return 35.0f + random(0, 5000) / 100.0f; // %
 }
 
 float readLightLevel() {
-    return 100.0f + static_cast<float>(random(0, 30000)) / 100.0f;
+    return random(200, 3000); // lux
 }
 
-String buildJsonPayload(float moisture, float temp, float humidity) {
-    char buffer[200];
+float readGas() {
+    return random(100, 900); // ppm
+}
+
+float readWaterLevel() {
+    return random(0, 101); // %
+}
+
+bool readTouch() {
+    return random(0, 2); // true / false
+}
+
+bool readPumpState() {
+    return random(0, 2); // true / false
+}
+
+// -------- Build JSON --------
+String buildJsonPayload(
+    float moisture,
+    float temperature,
+    float humidity,
+    float light,
+    float gas,
+    float waterLevel,
+    bool touch,
+    bool pumpState
+) {
+    char buffer[350];
     snprintf(
         buffer,
         sizeof(buffer),
-        "{\"temperature\":%.2f,\"humidity\":%.2f,\"moisture\":%.2f}",
-        temp, humidity, moisture
+        "{"
+        "\"temperature\":%.2f,"
+        "\"humidity\":%.2f,"
+        "\"moisture\":%.2f,"
+        "\"light\":%.2f,"
+        "\"gas\":%.2f,"
+        "\"water_level\":%.2f,"
+        "\"touch\":%s,"
+        "\"pump_state\":%s"
+        "}",
+        temperature,
+        humidity,
+        moisture,
+        light,
+        gas,
+        waterLevel,
+        touch ? "true" : "false",
+        pumpState ? "true" : "false"
     );
     return String(buffer);
 }
 
+// -------- POST Data --------
 void postSensorData() {
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("WiFi disconnected, reconnecting...");
         connectToWiFi();
         return;
     }
 
-    float moisture = readSoilMoisture();
-    float temp = readTemperature();
-    float humidity = readHumidity();
-    float light = readLightLevel();
+    float moisture   = readSoilMoisture();
+    float temperature = readTemperature();
+    float humidity   = readHumidity();
+    float light      = readLightLevel();
+    float gas        = readGas();
+    float waterLevel = readWaterLevel();
+    bool touch       = readTouch();
+    bool pumpState   = readPumpState();
 
-    String jsonPayload = buildJsonPayload(moisture, temp, humidity);
+    String jsonPayload = buildJsonPayload(
+        moisture,
+        temperature,
+        humidity,
+        light,
+        gas,
+        waterLevel,
+        touch,
+        pumpState
+    );
 
-    Serial.println("Posting data to server:");
+    Serial.println("Sending JSON:");
     Serial.println(jsonPayload);
 
     HTTPClient http;
@@ -82,17 +138,18 @@ void postSensorData() {
 
     int httpCode = http.POST(jsonPayload);
 
+    Serial.print("HTTP Response Code: ");
+    Serial.println(httpCode);
+
     if (httpCode > 0) {
-        Serial.printf("Server response code: %d\n", httpCode);
-        String response = http.getString();
-        Serial.println("Response body:");
-        Serial.println(response);
-    } else {
-        Serial.printf("POST failed. Error: %s\n", http.errorToString(httpCode).c_str());
+        Serial.println("Response:");
+        Serial.println(http.getString());
     }
+
     http.end();
 }
 
+// -------- Setup & Loop --------
 void setup() {
     Serial.begin(115200);
     delay(2000);
